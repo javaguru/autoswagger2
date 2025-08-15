@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Autoswagger - Cale Anderson @ Intruder    
+# Autoswagger - Cale Anderson @ Intruder
 import argparse
 import json
 import os
@@ -49,48 +49,48 @@ def setup_pii_recognizers():
     """
     # Person
     person_pattern = Pattern(
-        name="person", 
-        regex=r"\b[A-Z][a-z]+\s[A-Z][a-z]+\b", 
+        name="person",
+        regex=r"\b[A-Z][a-z]+\s[A-Z][a-z]+\b",
         score=0.85
     )
     person_recognizer = PatternRecognizer(
-        supported_entity="PERSON", 
+        supported_entity="PERSON",
         patterns=[person_pattern],
         context=["name","first_name","last_name","firstname","lastname"]
     )
 
     # Phone Number
     phone_pattern = Pattern(
-        name="phone_number", 
-        regex=r"(\+?\d{1,3}[-.\s]?(\d{3})[-.\s]?(\d{3,4})[-.\s]?(\d{4}))", 
+        name="phone_number",
+        regex=r"(\+?\d{1,3}[-.\s]?(\d{3})[-.\s]?(\d{3,4})[-.\s]?(\d{4}))",
         score=0.85
     )
     phone_recognizer = PatternRecognizer(
-        supported_entity="PHONE_NUMBER", 
+        supported_entity="PHONE_NUMBER",
         patterns=[phone_pattern],
         context=["phone","mobile","telephone","tel","phone_number"]
     )
 
     # Email Address
     email_pattern = Pattern(
-        name="email", 
-        regex=r"([a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+)", 
+        name="email",
+        regex=r"([a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+)",
         score=0.85
     )
     email_recognizer = PatternRecognizer(
-        supported_entity="EMAIL_ADDRESS", 
+        supported_entity="EMAIL_ADDRESS",
         patterns=[email_pattern],
         context=["email","email_address","contact"]
     )
 
     # Address
     address_pattern = Pattern(
-        name="address", 
-        regex=r"\b\d{1,5}\s\w+\s\w+\b", 
+        name="address",
+        regex=r"\b\d{1,5}\s\w+\s\w+\b",
         score=0.85
     )
     address_recognizer = PatternRecognizer(
-        supported_entity="ADDRESS", 
+        supported_entity="ADDRESS",
         patterns=[address_pattern],
         context=["addr","address","location"]
     )
@@ -473,7 +473,7 @@ def test_parameter_values(method, base_url_no_path, full_path, parameters, reque
         param_name = param.get('name')
         schema = param.get('schema', {})
         param_type = schema.get('type', 'string')
-        enum = schema.get('enum', None)
+        enum = param.get('enum', None)
         values = generate_parameter_values(param_type, enum)
         value_mapping[param_name] = values[0]
 
@@ -494,7 +494,7 @@ def test_parameter_values(method, base_url_no_path, full_path, parameters, reque
                 continue
             schema = param.get('schema', {})
             param_type = schema.get('type', None)
-            enum = schema.get('enum', None)
+            enum = param.get('enum', None)
             if param_type:
                 values = generate_parameter_values(param_type, enum)
             else:
@@ -751,7 +751,8 @@ def test_endpoint(base_url, base_path, path_template, method, parameters, reques
     """
     if base_path and not base_path.startswith("/"):
         base_path = "/" + base_path
-    if base_path.endswith("/"):
+    # Normalize base_path by removing trailing slash if it's not just "/"
+    if base_path.endswith("/") and base_path != "/":
         base_path = base_path[:-1]
 
     full_path = base_path + path_template
@@ -783,7 +784,7 @@ def test_endpoints(base_url, base_path, swagger_spec, verbose=False,
     """
     Iterates over all paths and methods in the provided swagger_spec.
     Submits tasks to test_endpoint if the method is allowed (GET or others if -risk).
-    Returns all aggregated results. Also includes fallback if 80%+ are 404.
+    Returns all aggregated results.
     """
     results = []
     if not swagger_spec or 'paths' not in swagger_spec:
@@ -819,7 +820,17 @@ def test_endpoints(base_url, base_path, swagger_spec, verbose=False,
                 if 'requestBody' in details:
                     rb_content = details['requestBody'].get('content', {})
                     if not rb_content:
+                        # If no content, still submit the request without a body
+                        fut = executor.submit(
+                            test_endpoint,
+                            base_url, base_path, path, mthd,
+                            parameters, None, None,
+                            verbose, rate, include_all,
+                            product_mode=product_mode, brute=brute
+                        )
+                        future_to_endpoint[fut] = (mthd, path, None)
                         continue
+
                     content_types = list(rb_content.keys())
                     for ct in content_types:
                         schema = rb_content[ct].get('schema', {})
@@ -833,21 +844,33 @@ def test_endpoints(base_url, base_path, swagger_spec, verbose=False,
                         )
                         future_to_endpoint[fut] = (mthd, path, ct)
                 else:
-                    # Swagger 2.0 with parameters
+                    # Swagger 2.0 with parameters or no request body
+                    body_param_found = False
                     if parameters:
                         for param in parameters:
                             if param.get('in') == 'body' and 'schema' in param:
                                 schema = param['schema']
+                                request_body = build_request_body(schema, 'application/json')
+                                fut = executor.submit(
+                                    test_endpoint,
+                                    base_url, base_path, path, mthd,
+                                    parameters, request_body, 'application/json',
+                                    verbose, rate, include_all,
+                                    product_mode=product_mode, brute=brute
+                                )
+                                future_to_endpoint[fut] = (mthd, path, 'application/json')
+                                body_param_found = True
                                 break
-                    request_body = build_request_body(schema, 'application/json')
-                    fut = executor.submit(
-                        test_endpoint,
-                        base_url, base_path, path, mthd,
-                        parameters, request_body, 'application/json',
-                        verbose, rate, include_all,
-                        product_mode=product_mode, brute=brute
-                    )
-                    future_to_endpoint[fut] = (mthd, path, 'application/json')
+                    if not body_param_found:
+                        fut = executor.submit(
+                            test_endpoint,
+                            base_url, base_path, path, mthd,
+                            parameters, None, None,
+                            verbose, rate, include_all,
+                            product_mode=product_mode, brute=brute
+                        )
+                        future_to_endpoint[fut] = (mthd, path, None)
+
 
         for future in as_completed(future_to_endpoint):
             mthd, pth, ct = future_to_endpoint[future]
@@ -859,59 +882,57 @@ def test_endpoints(base_url, base_path, swagger_spec, verbose=False,
                 if verbose:
                     log(f"Endpoint {mthd.upper()} {pth} with content type {ct} generated an exception: {exc}", level="DEBUG")
 
-    # Basepath fallback logic if 80%+ of responses are 404 with the same content length
-    if not tried_basepath_fallback:
-        num_responses = len(all_results)
-        num_404s = sum(1 for r in all_results if r['status_code'] == 404)
-        content_lengths = set(r['content_length'] for r in all_results if r['status_code'] == 404)
-        if num_404s > 0 and num_responses > 0:
-            proportion_404 = num_404s / num_responses
-            if proportion_404 > 0.8 and len(content_lengths) == 1 and base_path != '/':
-                if verbose:
-                    log("Basepath fallback triggered. Retesting endpoints with basepath '/'.", level="INFO")
-                all_results.clear()
-                fallback = test_endpoints(
-                    base_url, '/', swagger_spec, verbose,
-                    include_risk, include_all, product_mode=product_mode,
-                    rate=rate, tried_basepath_fallback=True, brute=brute
-                )
-                return fallback
-
     return all_results
 
 def fetch_swagger_spec(url, verbose=False):
     """
+    NEW: More robust fetcher. Ignores Content-Type and tries to parse.
     Attempts to fetch and parse an OpenAPI/Swagger spec from a given URL.
-    Checks if response code is 200, content is JSON/YAML, and contains 'swagger'/'openapi'.
     Returns the parsed spec as a dictionary or None if unsuccessful.
     """
     if verbose:
         log(f"Fetching Swagger/OpenAPI spec directly from {url}", level="DEBUG")
     try:
         resp = requests.get(url, verify=False, timeout=TIMEOUT)
-        ctype = resp.headers.get('Content-Type', '').lower()
-        if resp.status_code == 200 and any(x in ctype for x in ['json','yaml','text/plain']):
-            if 'swagger' in resp.text.lower() or 'openapi' in resp.text.lower():
-                try:
-                    if 'json' in ctype:
-                        spec = resp.json()
-                    else:
-                        spec = yaml.safe_load(resp.text)
-                    if verbose:
-                        log("Successfully loaded spec.", level="SUCCESS")
-                    return spec
-                except (json.JSONDecodeError, yaml.YAMLError) as perr:
-                    if verbose:
-                        log(f"Error decoding spec from {url}: {perr}", level="DEBUG")
-                        log(f"Failed to parse spec from {url}", level="DEBUG")
-        else:
+
+        if resp.status_code != 200:
             if verbose:
+                ctype = resp.headers.get('Content-Type', '').lower()
                 log(f"Invalid response from {url}: {resp.status_code}, Content-Type: {ctype}", level="WARNING")
-                log(f"Failed to parse spec from {url}", level="DEBUG")
+            return None
+
+        content_text = resp.text
+        if 'swagger' not in content_text.lower() and 'openapi' not in content_text.lower():
+            if verbose:
+                log(f"Content from {url} does not appear to be a spec file (missing 'swagger' or 'openapi' keywords).", level="DEBUG")
+            return None
+
+        # Try parsing as JSON first, as it's most common
+        try:
+            spec = resp.json()
+            if verbose:
+                log("Successfully loaded spec as JSON.", level="SUCCESS")
+            return spec
+        except json.JSONDecodeError:
+            # If JSON fails, try parsing as YAML
+            try:
+                spec = yaml.safe_load(content_text)
+                if isinstance(spec, dict): # Ensure YAML parsing results in a dictionary
+                    if verbose:
+                        log("Successfully loaded spec as YAML.", level="SUCCESS")
+                    return spec
+                else: # If YAML parsing returns a string or something else, it's not a valid spec
+                    if verbose:
+                        log(f"YAML parsing of content from {url} did not result in a valid spec object.", level="DEBUG")
+                    return None
+            except yaml.YAMLError as perr:
+                if verbose:
+                    log(f"Failed to parse spec from {url} as either JSON or YAML. YAML Error: {perr}", level="DEBUG")
+                return None
+
     except requests.exceptions.RequestException as e:
         if verbose:
             log(f"Error fetching Swagger/OpenAPI spec from {url}: {e}", level="DEBUG")
-            log(f"Failed to parse spec from {url}", level="DEBUG")
     return None
 
 def find_swagger_ui_docs(base_url, verbose=False):
@@ -919,6 +940,7 @@ def find_swagger_ui_docs(base_url, verbose=False):
     Attempts to detect a Swagger UI at known paths by scanning for references
     to swagger/openapi in the HTML or embedded JavaScript. If found, attempts
     to parse the discovered spec path or extract an embedded spec.
+    Returns a tuple of (spec, spec_url) or (None, None).
     """
     for pth in SWAGGER_UI_PATHS:
         swagger_ui_url = urljoin(base_url, pth)
@@ -937,7 +959,7 @@ def find_swagger_ui_docs(base_url, verbose=False):
                     if any(full_spec_url.lower().endswith(ext) for ext in ['.json', '.yaml', '.yml']):
                         sp = fetch_swagger_spec(full_spec_url, verbose)
                         if sp:
-                            return sp
+                            return sp, full_spec_url
                     else:
                         if verbose:
                             log(f"Spec URL does not have a valid spec extension: {full_spec_url}", level="DEBUG")
@@ -951,7 +973,7 @@ def find_swagger_ui_docs(base_url, verbose=False):
                                     if emb and isinstance(emb, dict):
                                         if verbose:
                                             log(f"Extracted embedded Swagger spec from JS file: {full_spec_url}", level="DEBUG")
-                                        return emb
+                                        return emb, full_spec_url
                             except requests.exceptions.RequestException as e:
                                 if verbose:
                                     log(f"Error fetching JS file {full_spec_url}: {e}", level="DEBUG")
@@ -977,7 +999,7 @@ def find_swagger_ui_docs(base_url, verbose=False):
                                 if any(full_spec_url_js.lower().endswith(ext) for ext in ['.json', '.yaml', '.yml']):
                                     sp2 = fetch_swagger_spec(full_spec_url_js, verbose)
                                     if sp2:
-                                        return sp2
+                                        return sp2, full_spec_url_js
                                 else:
                                     if full_spec_url_js.lower().endswith('.js'):
                                         try:
@@ -987,7 +1009,7 @@ def find_swagger_ui_docs(base_url, verbose=False):
                                                 if emb2 and isinstance(emb2, dict):
                                                     if verbose:
                                                         log(f"Extracted embedded Swagger spec from nested JS file: {full_spec_url_js}", level="DEBUG")
-                                                    return emb2
+                                                    return emb2, full_spec_url_js
                                         except requests.exceptions.RequestException as e:
                                             if verbose:
                                                 log(f"Error fetching nested JS file {full_spec_url_js}: {e}", level="DEBUG")
@@ -995,7 +1017,7 @@ def find_swagger_ui_docs(base_url, verbose=False):
                             if emb and isinstance(emb, dict):
                                 if verbose:
                                     log(f"Extracted embedded Swagger spec from JS file: {jsu}", level="DEBUG")
-                                return emb
+                                return emb, jsu
                     except requests.exceptions.RequestException as e:
                         if verbose:
                             log(f"Error fetching JS file {jsu}: {e}", level="DEBUG")
@@ -1006,11 +1028,11 @@ def find_swagger_ui_docs(base_url, verbose=False):
                         log(f"Found Swagger spec URL via swashbuckleConfig: {full_swash_url}", level="DEBUG")
                     sp3 = fetch_swagger_spec(full_swash_url, verbose)
                     if sp3:
-                        return sp3
+                        return sp3, full_swash_url
         except requests.exceptions.RequestException as e:
             if verbose:
                 log(f"Error checking Swagger UI page at {swagger_ui_url}: {e}", level="DEBUG")
-    return None
+    return None, None
 
 def extract_swashbuckle_config_spec_url(html_text):
     """
@@ -1165,60 +1187,62 @@ def main(urls, verbose, include_risk, include_all, product_mode, stats_flag, rat
         with lock:
             stats["active_hosts"] += 1
 
-        # Check if the URL might be a direct spec (ends with .json/.yaml/.yml)
-        if any(base_url.lower().endswith(ext) for ext in ['.json', '.yaml', '.yml']):
-            if not product_mode:
-                log(f"Processing direct spec URL: {base_url}", level="INFO")
-            swagger_spec = fetch_swagger_spec(base_url, verbose)
-            if swagger_spec:
-                with lock:
-                    stats["hosts_with_valid_spec"] += 1
-                if not product_mode:
-                    log("Successfully loaded spec.", level="INFO")
-                base_path = '/'
-                if 'servers' in swagger_spec and isinstance(swagger_spec['servers'], list) and swagger_spec['servers']:
-                    base_path = swagger_spec['servers'][0].get('url', '/')
-                elif 'basePath' in swagger_spec:
-                    base_path = swagger_spec.get('basePath', '/')
-                if not product_mode:
-                    log("Scanning endpoints.", level="INFO")
-                rslts = test_endpoints(
-                    base_url, base_path, swagger_spec,
-                    verbose, include_risk, include_all,
-                    product_mode=product_mode, rate=rate, brute=brute
-                )
-                del swagger_spec
-                with results_lock:
-                    all_results.extend(rslts)
-                    if rslts:
-                        stats["hosts_with_valid_endpoint"] += 1
-                        for rr in rslts:
-                            if rr['pii_detected']:
-                                stats["hosts_with_pii"] += 1
-                                stats["pii_detection_methods"].update(rr['pii_detection_methods'])
-                                stats["regexes_found"].update(rr['regex_patterns_found'].values())
-                return
-            else:
-                if verbose:
-                    log(f"Failed to parse spec from {base_url}", level="DEBUG")
-                with lock:
-                    bad_hosts.add(host)
-                return
+        swagger_spec = None
+        spec_url = None
 
-        # Phase 1 & 2: Look for swagger UI
-        swagger_spec = find_swagger_ui_docs(base_url, verbose)
+        # --- NEW FIX: START ---
+        # First, ALWAYS try to treat the provided URL as the direct spec location
+        if not product_mode:
+            log(f"Attempting to fetch spec directly from provided URL: {base_url}", level="INFO")
+
+        swagger_spec = fetch_swagger_spec(base_url, verbose)
+        if swagger_spec:
+            spec_url = base_url
+        else:
+            # If that fails, proceed with original discovery logic
+            if not product_mode:
+                log(f"Provided URL is not a spec file. Starting discovery...", level="INFO")
+
+            # Use only the scheme and host for discovery, not the full path
+            discovery_root_url = f"{parsed_input_url.scheme}://{parsed_input_url.netloc}"
+
+            # Phase 1 & 2: Look for swagger UI
+            swagger_spec, spec_url = find_swagger_ui_docs(discovery_root_url, verbose)
+
+            # Phase 3: Direct spec path detection if UI not found
+            if not swagger_spec:
+                if verbose:
+                    log(f"Proceeding to Phase 3: Direct Spec Path Detection for {discovery_root_url}", level="DEBUG")
+                for pth in DIRECT_SPEC_PATHS:
+                    current_spec_url = urljoin(discovery_root_url, pth)
+                    if verbose:
+                        log(f"Attempting to fetch spec from direct path: {current_spec_url}", level="DEBUG")
+                    sws = fetch_swagger_spec(current_spec_url, verbose)
+                    if sws:
+                        swagger_spec = sws
+                        spec_url = current_spec_url
+                        if not product_mode:
+                            log(f"Spec identified via direct path detection: {spec_url}", level="INFO")
+                        break
+        # --- NEW FIX: END ---
+
         if swagger_spec:
             with lock:
                 stats["hosts_with_valid_spec"] += 1
+            if not product_mode and not any(base_url.lower().endswith(ext) for ext in ['.json', '.yaml', '.yml']):
+                log("Successfully loaded spec.", level="INFO")
+
+            # --- CONTEXT PATH CORRECTION ---
+            # The base path for API calls is the directory where the spec was found.
+            parsed_spec_url = urlparse(spec_url)
+            spec_directory = os.path.dirname(parsed_spec_url.path)
+
+            base_path = spec_directory if spec_directory and spec_directory != '/' else '/'
+            # --- END CONTEXT PATH CORRECTION ---
+
             if not product_mode:
-                log(f"Spec identified via Swagger-UI detection.", level="INFO")
-            base_path = '/'
-            if 'servers' in swagger_spec and isinstance(swagger_spec['servers'], list) and swagger_spec['servers']:
-                base_path = swagger_spec['servers'][0].get('url', '/')
-            elif 'basePath' in swagger_spec:
-                base_path = swagger_spec.get('basePath', '/')
-            if not product_mode:
-                log("Scanning endpoints.", level="INFO")
+                log(f"Scanning endpoints with base path: {base_path}", level="INFO")
+
             rslts = test_endpoints(
                 base_url, base_path, swagger_spec,
                 verbose, include_risk, include_all,
@@ -1232,54 +1256,22 @@ def main(urls, verbose, include_risk, include_all, product_mode, stats_flag, rat
                     for rr in rslts:
                         if rr['pii_detected']:
                             stats["hosts_with_pii"] += 1
-                            stats["pii_detection_methods"].update(rr['pii_detection_methods'])
-                            stats["regexes_found"].update(rr['regex_patterns_found'].values())
-            return
-
-        # Phase 3: Direct spec path detection
-        if verbose:
-            log(f"Proceeding to Phase 3: Direct Spec Path Detection for {base_url}", level="DEBUG")
-        for pth in DIRECT_SPEC_PATHS:
-            spec_url = urljoin(base_url, pth)
-            if verbose:
-                log(f"Attempting to fetch spec from direct path: {spec_url}", level="DEBUG")
-            sws = fetch_swagger_spec(spec_url, verbose)
-            if sws:
-                with lock:
-                    stats["hosts_with_valid_spec"] += 1
-                if not product_mode:
-                    log(f"Spec identified via direct path detection: {spec_url}", level="INFO")
-                base_path = '/'
-                if 'servers' in sws and isinstance(sws['servers'], list) and sws['servers']:
-                    base_path = sws['servers'][0].get('url', '/')
-                elif 'basePath' in sws:
-                    base_path = sws.get('basePath', '/')
-                if not product_mode:
-                    log("Scanning endpoints.", level="INFO")
-                rslts2 = test_endpoints(
-                    base_url, base_path, sws,
-                    verbose, include_risk, include_all,
-                    product_mode=product_mode, rate=rate, brute=brute
-                )
-                del sws
-                with results_lock:
-                    all_results.extend(rslts2)
-                    if rslts2:
-                        stats["hosts_with_valid_endpoint"] += 1
-                        for rr in rslts2:
-                            if rr['pii_detected']:
-                                stats["hosts_with_pii"] += 1
-                                stats["pii_detection_methods"].update(rr['pii_detection_methods'])
+                            # Ensure these keys exist before updating
+                            if 'pii_detection_details' in rr and rr['pii_detection_details']:
+                                for details in rr['pii_detection_details'].values():
+                                    if 'detection_methods' in details:
+                                        stats["pii_detection_methods"].update(details['detection_methods'])
+                            if 'regex_patterns_found' in rr and rr['regex_patterns_found']:
                                 stats["regexes_found"].update(rr['regex_patterns_found'].values())
-                return
+
         else:
             if verbose:
                 log(f"No valid Swagger/OpenAPI spec found for {base_url}.", level="DEBUG")
-                log(f"Failed to parse spec from {base_url}", level="DEBUG")
             else:
                 log(f"No spec found for {base_url}.", level="INFO")
             with lock:
                 bad_hosts.add(host)
+
 
     if not product_mode:
         print_banner()
@@ -1289,11 +1281,11 @@ def main(urls, verbose, include_risk, include_all, product_mode, stats_flag, rat
         futs = {executor.submit(process_url, url): url for url in processed_urls}
         if not product_mode:
             with Progress(
-                SpinnerColumn(),
-                TextColumn("[progress.description]{task.description}"),
-                BarColumn(),
-                TimeElapsedColumn(),
-                console=console
+                    SpinnerColumn(),
+                    TextColumn("[progress.description]{task.description}"),
+                    BarColumn(),
+                    TimeElapsedColumn(),
+                    console=console
             ) as progress:
                 task = progress.add_task("Processing URLs", total=len(futs))
                 for fut in as_completed(futs):
