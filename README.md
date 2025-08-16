@@ -12,28 +12,33 @@ This script has been significantly enhanced from the original version.
 Key improvements are detailed below:
 
 1. Advanced Spec Discovery Engine:
-   - Context-Aware Searching: The discovery logic now prioritizes searching within the user-provided URL path
-     (e.g., /app-context/) before falling back to the server root, making it effective for non-root applications.
-   - Intelligent URL Handling: It correctly distinguishes between direct spec URLs, Swagger UI pages, and base URLs,
-     and follows the appropriate discovery path for each.
-   - Spring Boot / springdoc-openapi Compatibility: The parser now correctly handles the `configUrl` property
-     found in modern Swagger UI initializers, allowing it to follow multi-step configurations to find the true spec URL.
-   - Default Configuration Filtering: Actively ignores the default "petstore.swagger.io" example URL to prevent false positives.
+    - Context-Aware Searching: The discovery logic now prioritizes searching within the user-provided URL path
+      (e.g., /app-context/) before falling back to the server root, making it effective for non-root applications.
+    - Intelligent URL Handling: It correctly distinguishes between direct spec URLs, Swagger UI pages, and base URLs,
+      and follows the appropriate discovery path for each.
+    - Spring Boot / springdoc-openapi Compatibility: The parser now correctly handles multi-step discovery,
+      including the `configUrl` property and API group lists, to find the true spec URL.
+    - Default Configuration Filtering: Actively ignores the default "petstore.swagger.io" example URL to prevent false positives.
 
-2. Enhanced Security Analysis Capabilities:
-   - Expanded discovery paths based on Nuclei templates
-   - Secret Detection (TruffleHog Patterns): The list of regex patterns has been significantly expanded to detect
-     modern secrets, including JSON Web Tokens (JWT), Azure and Google Cloud credentials, and Ethereum private keys.
-   - PII (Personally Identifiable Information) Detection: Integrated the 'presidio-analyzer' library to scan
-     API responses for sensitive personal data like names, emails, phone numbers, and addresses.
-   - Improved Test Payloads: The `TEST_VALUES` dictionary has been updated with more relevant security test cases,
-     including basic SQL Injection and XSS payloads, and more realistic Base64-encoded values.
+ 2. Enhanced Security Analysis Capabilities:
+    - Expanded discovery paths based on Nuclei templates.
+    - Secret Detection (TruffleHog Patterns): The list of regex patterns has been significantly expanded to detect
+      modern secrets, including JSON Web Tokens (JWT), Azure and Google Cloud credentials, and Ethereum private keys.
+    - PII (Personally Identifiable Information) Detection: Integrated the 'presidio-analyzer' library to scan
+      API responses for sensitive personal data like names, emails, phone numbers, and addresses.
+    - Creative Test Payloads: The `TEST_VALUES` dictionary has been completely revamped with a wide range of payloads
+      for SQLi, NoSQLi, Command Injection, SSTI, XSS, Path Traversal, and various fuzzing/edge cases.
+    - Refined Debug Info Detection: The pattern for detecting debug information is now more comprehensive,
+      catching common stack traces and database error messages while being classified separately from secrets.
 
-3. General & Quality-of-Life Improvements:
-    - Custom User-Agent: All outgoing HTTP requests now use a 'AutoSwagger' User-Agent for better identification in server logs.
-    - Robustness: Fixed a critical bug ('prop' vs 'schema' typo) that could cause crashes when parsing complex schemas.
+ 3. General & Quality-of-Life Improvements:
+    - Custom User-Agent: All outgoing HTTP requests now use a 'AutoSwagger2' User-Agent for better identification in server logs.
+    - Robustness & Bug Fixes:
+        - Correctly generates JSON object request bodies when expected by the API, resolving backend errors.
+        - Prevents false positives by skipping secret detection on binary content (e.g., images, octet-streams).
+        - Fixed serialization errors for table and JSON output when handling binary or complex request bodies.
     - Expanded Path Lists: Added more common paths to `SWAGGER_UI_PATHS` and `DIRECT_SPEC_PATHS` to increase the success rate of discovery.
-    - Modernized Output: Replaced basic print statements with the 'rich' library for clear, formatted tables and progress bars.
+    - Modernized Output: The output now clearly distinguishes between high-confidence "PII/Secret" findings and lower-confidence "Debug Info" indicators.
 
 ## Table of Contents
 1. [Introduction](#introduction)
