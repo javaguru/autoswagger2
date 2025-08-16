@@ -124,6 +124,11 @@ console = Console()
 # Suppress warnings about unverified HTTPS requests
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
+# --- NEW: Create a global session object with a custom User-Agent ---
+session = requests.Session()
+session.headers.update({'User-Agent': 'AutoSwagger'})
+session.verify = False # Equivalent to verify=False everywhere
+
 # Default request timeout
 TIMEOUT = 10
 
@@ -577,9 +582,9 @@ def send_request(method, base_url_no_path, full_path, parameters, value_mapping,
             time.sleep(1.0 / rate)  # Rate limiting
         TOTAL_REQUESTS += 1
 
-        response = requests.request(
+        response = session.request(
             method, full_url, headers=headers, data=data,
-            verify=False, allow_redirects=False, timeout=TIMEOUT
+            allow_redirects=False, timeout=TIMEOUT
         )
         status_code = response.status_code
 
@@ -895,13 +900,13 @@ def fetch_swagger_spec(url, verbose=False):
     if verbose:
         log(f"Fetching Swagger/OpenAPI spec directly from {url}", level="DEBUG")
     try:
-        resp = requests.get(url, verify=False, timeout=TIMEOUT)
+        resp = session.get(url, timeout=TIMEOUT)
 
         if resp.status_code != 200:
-            if verbose:
+             if verbose:
                 ctype = resp.headers.get('Content-Type', '').lower()
                 log(f"Invalid response from {url}: {resp.status_code}, Content-Type: {ctype}", level="WARNING")
-            return None
+             return None
 
         content_text = resp.text
         if 'swagger' not in content_text.lower() and 'openapi' not in content_text.lower():
@@ -949,7 +954,7 @@ def extract_spec_from_content(content, base_url, verbose=False):
         if verbose:
             log(f"Found configUrl: {full_config_url}", level="DEBUG")
         try:
-            config_resp = requests.get(full_config_url, verify=False, timeout=TIMEOUT)
+            config_resp = session.get(full_config_url, timeout=TIMEOUT)
             if config_resp.status_code == 200:
                 config_json = config_resp.json()
                 if 'urls' in config_json and config_json['urls']:
@@ -993,7 +998,7 @@ def parse_swagger_ui_page(page_url, verbose=False):
     if verbose:
         log(f"Parsing provided URL as a potential Swagger UI page: {page_url}", level="DEBUG")
     try:
-        r = requests.get(page_url, verify=False, allow_redirects=True, timeout=TIMEOUT)
+        r = session.get(page_url, allow_redirects=True, timeout=TIMEOUT)
         if r.status_code == 200 and ('swagger' in r.text.lower() or 'openapi' in r.text.lower()):
             if verbose:
                 log(f"Content at {page_url} looks like a Swagger UI page.", level="DEBUG")
@@ -1008,7 +1013,7 @@ def parse_swagger_ui_page(page_url, verbose=False):
                 if verbose:
                     log(f"Analyzing JS file: {jsu}", level="DEBUG")
                 try:
-                    js_resp = requests.get(jsu, verify=False, timeout=TIMEOUT)
+                    js_resp = session.get(jsu, timeout=TIMEOUT)
                     if js_resp.status_code == 200:
                         spec, spec_url = extract_spec_from_content(js_resp.text, jsu, verbose)
                         if spec:
