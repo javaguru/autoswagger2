@@ -205,7 +205,12 @@ TRUFFLEHOG_REGEXES = {
     "Telegram Bot API Key": r"[0-9]+:AA[0-9A-Za-z\-_]{33}",
     "Twilio API Key": r"SK[0-9a-fA-F]{32}",
     "Twitter Access Token": r"[tT][wW][iI][tT][tT][eE][rR].*[1-9][0-9]+-[0-9a-zA-Z]{40}",
-    "Twitter OAuth": r"[tT][wW][iI][tT][tT][eE][rR].*['\"]?[0-9a-zA-Z]{35,44}['\"]?"
+    "Twitter OAuth": r"[tT][wW][iI][tT][tT][eE][rR].*['\"]?[0-9a-zA-Z]{35,44}['\"]?",
+    # --- NEW PATTERNS ---
+    "JSON Web Token": r"ey[A-Za-z0-9-_=]+\.ey[A-Za-z0-9-_=]+\.?[A-Za-z0-9-_.+/=]*",
+    "Azure Client Secret": r"[A-Za-z0-9\._~\-]{40}",
+    "Google Cloud API Key": r"[A-Za-z0-9_]{21}--[A-Za-z0-9_]{8}",
+    "Ethereum Private Key": r"0x[0-9a-fA-F]{64}",
 }
 
 # Compile the regexes for performance
@@ -216,16 +221,21 @@ DEBUG_INFO_PATTERN = re.compile(r'\b(?:env\.[A-Za-z_]+|AWS_[A-Z_]+|AZURE_[A-Z_]+
 
 # Default test values for parameters by type
 TEST_VALUES = {
-    "integer": [1, 2, 100, -1, 0, 999, 123456],
+    "integer": [1, 0, -1, 100, 999999],
     "string": [
-        "1", "test", "example", "1234", "none", "admin", "guest", "user@email.com",
-        "550e8400-e29b-41d4-a716-446655440000",
-        "a8098c1a-f86e-11da-bd1a-00112444be1e"
+        "test", "admin", "1", "", "' OR 1=1--", "<script>alert('XSS')</script>",
+        "../../../../etc/passwd", "user@example.com",
+        "550e8400-e29b-41d4-a716-446655440000" # UUID
     ],
     "boolean": [True, False],
-    "number": [1, 0, 100, 1000, 0.1],
-    "base64": ["MQ==", "dXNlcjE=", "YWRtaW4xMjM=", "c2FtcGxlVXNlcg=="],
-    "default": ["1", "test", "123", "True","true","550e8400-e29b-41d4-a716-446655440000", "*", "All"]
+    "number": [1.0, 0.0, -1.5, 999.99],
+    "base64": [
+        "MQ==", # 1
+        "YWRtaW4=", # admin
+        "eyJ1c2VyIjogImFkbWluIiwgImlkIjogMTIzfQ==", # {"user": "admin", "id": 123}
+        "L2V0Yy9wYXNzd2Q=" # /etc/passwd
+    ],
+    "default": ["1", "test", True, "550e8400-e29b-41d4-a716-446655440000", "*"]
 }
 
 # Lock for thread-safe operations
