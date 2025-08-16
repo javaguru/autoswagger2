@@ -1,6 +1,6 @@
-# [Autoswagger2](https://github.com/javaguru/autoswagger) by **[Franck Andriano.](http://jservlet.com)**
+# [AutoSwagger2](https://github.com/javaguru/autoswagger) by **[Franck Andriano.](http://jservlet.com)**
 <a href="http://jservlet.com">
-  <img width="966" alt="output" src="https://github.com/javaguru/autoswagger/blob/main/image/output.png" />
+  <img width="966" alt="output" src="https://github.com/javaguru/autoswagger/blob/master/image/output.png" />
 </a>
 <br>  
 <br>  
