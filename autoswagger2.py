@@ -1,5 +1,37 @@
 #!/usr/bin/env python3
-# Autoswagger - Cale Anderson @ Intruder
+# AutoSwagger2 Copyright Jservlet.com 2025 Franck Andriano.
+# From original version Autoswagger - Cale Anderson @ Intruder
+#
+# --- Modifications Summary ---
+# Modified by Franck Andriano. @ FranckAndriano
+#
+# This script has been significantly enhanced from the original version.
+# Key improvements are detailed below:
+#
+# 1. Advanced Spec Discovery Engine:
+#    - Context-Aware Searching: The discovery logic now prioritizes searching within the user-provided URL path
+#      (e.g., /app-context/) before falling back to the server root, making it effective for non-root applications.
+#    - Intelligent URL Handling: It correctly distinguishes between direct spec URLs, Swagger UI pages, and base URLs,
+#      and follows the appropriate discovery path for each.
+#    - Spring Boot / springdoc-openapi Compatibility: The parser now correctly handles the `configUrl` property
+#      found in modern Swagger UI initializers, allowing it to follow multi-step configurations to find the true spec URL.
+#    - Default Configuration Filtering: Actively ignores the default "petstore.swagger.io" example URL to prevent false positives.
+#
+# 2. Enhanced Security Analysis Capabilities:
+#    - Expanded discovery paths based on Nuclei templates
+#    - Secret Detection (TruffleHog Patterns): The list of regex patterns has been significantly expanded to detect
+#      modern secrets, including JSON Web Tokens (JWT), Azure and Google Cloud credentials, and Ethereum private keys.
+#    - PII (Personally Identifiable Information) Detection: Integrated the 'presidio-analyzer' library to scan
+#      API responses for sensitive personal data like names, emails, phone numbers, and addresses.
+#    - Improved Test Payloads: The `TEST_VALUES` dictionary has been updated with more relevant security test cases,
+#      including basic SQL Injection and XSS payloads, and more realistic Base64-encoded values.
+#
+# 3. General & Quality-of-Life Improvements:
+#    - Custom User-Agent: All outgoing HTTP requests now use a 'AutoSwagger2' User-Agent for better identification in server logs.
+#    - Robustness: Fixed a critical bug ('prop' vs 'schema' typo) that could cause crashes when parsing complex schemas.
+#    - Expanded Path Lists: Added more common paths to `SWAGGER_UI_PATHS` and `DIRECT_SPEC_PATHS` to increase the success rate of discovery.
+#    - Modernized Output: Replaced basic print statements with the 'rich' library for clear, formatted tables and progress bars.
+
 import argparse
 import json
 import os
@@ -124,30 +156,40 @@ console = Console()
 # Suppress warnings about unverified HTTPS requests
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-# --- NEW: Create a global session object with a custom User-Agent ---
+# --- MODIFICATION: Create a global session object with a custom User-Agent ---
+# This ensures all requests made by the script identify themselves as "AutoSwagger2".
 session = requests.Session()
-session.headers.update({'User-Agent': 'AutoSwagger'})
+session.headers.update({'User-Agent': 'AutoSwagger2'})
 session.verify = False # Equivalent to verify=False everywhere
 
 # Default request timeout
 TIMEOUT = 10
 
-# Paths for detecting swagger/openapi specs in UI or direct spec endpoints
+# --- IMPROVEMENT: Expanded discovery paths based on Nuclei templates ---
 SWAGGER_UI_PATHS = sorted({
     "/", "/apidocs/", "/swagger/ui/index", "/swagger/index.html", "/swagger-ui.html",
-    "/swagger-ui/index.html", # <<< FIX: ADDED THIS COMMON PATH
-    "/swagger/swagger-ui.html", "/api/swagger-ui.html", "/api_docs", "/api/index.html",
-    "/api/doc", "/api/docs/", "/api/swagger/index.html", "/api/swagger/swagger-ui.html",
-    "/api/swagger-ui/api-docs", "/api/api-docs", "/api/apidocs", "/api/swagger",
-    "/api/swagger/static/index.html", "/api/swagger-resources",
-    "/api/swagger-resources/restservices/v2/api-docs", "/api/__swagger__/", "/api/_swagger_/",
-    "/docu", "/docs", "/swagger", "/api-doc", "/doc/",
-    "/webjars/swagger-ui/index.html", "/3.0.0/swagger-ui.html",
+    "/swagger-ui/index.html", "/swagger/swagger-ui.html", "/api/swagger-ui.html",
+    "/api_docs", "/api/index.html", "/api/doc", "/api/docs/", "/api/swagger/index.html",
+    "/api/swagger/swagger-ui.html", "/api/swagger-ui/api-docs", "/api/api-docs",
+    "/api/apidocs", "/api/swagger", "/api/swagger/static/index.html",
+    "/api/swagger-resources", "/api/swagger-resources/restservices/v2/api-docs",
+    "/api/__swagger__/", "/api/_swagger_/", "/docu", "/docs", "/swagger", "/api-doc",
+    "/doc/", "/webjars/swagger-ui/index.html", "/3.0.0/swagger-ui.html",
     "/MobiControl/api/docs/index/index.html", "/Swagger", "/Swagger/", "/Swagger/index.html",
     "/V2/api-docs/ui", "/admin/swagger-ui/index.html", "/api-doc/", "/api-docs/",
     "/api-docs/ui/", "/api-docs/v1/index.html", "/api-documentation/index.html",
     "/api/", "/api/api-docs", "/api/api-docs/index.html", "/api/api/",
     "/api/apidocs", "/api/config", "/api/doc", "/api/doc/", "/api/spec/", "/spec/",
+    "/swagger-ui/swagger-ui.js", "/swagger/swagger-ui.js", "/swagger-ui.js",
+    "/swagger/ui/swagger-ui.js", "/api/docs/index.html", "/api/help/swagger-console.html",
+    "/api/swagger/ui/index", "/__swagger__/", "/_swagger_/",
+    "/swagger-resources/configuration/security", "/swagger-resources/configuration/ui",
+    "/swagger-ui/", "/swagger-ui/vendor", "/swagger/", "/swagger/api-docs/",
+    "/swagger/dist/index.html", "/swagger/document", "/swagger/static/index.html",
+    "/swaggerui/", "/swaggerui/index.html", "/v1/api-docs/", "/v1/api-docs/index.html",
+    "/v1/swagger-ui.html", "/v3/api-docs/ui", "/webapi/index.html",
+    "/webapi/swagger/index.html", "/webjars/springfox-swagger-ui/3.0.0/swagger-ui.html",
+    "/webjars/swagger-ui/2.2.5/index.html"
 })
 
 DIRECT_SPEC_PATHS = sorted({
@@ -172,10 +214,11 @@ DIRECT_SPEC_PATHS = sorted({
     "/api-docs/swagger-ui.json", "/api-docs/swagger-ui.yaml",
     "/api-docs/openapi.json", "/api-docs/openapi.yaml",
     "/swagger-ui.json", "/swagger-ui.yaml",
-    "/v2/api-docs", "/v3/api-docs", # <<< FIX: ADDED COMMON SPRINGDOC PATHS
+    "/v2/api-docs", "/v3/api-docs",
 })
 
-# Regex patterns for secrets (similar to TruffleHog)
+# --- IMPROVEMENT: TruffleHog key template parsing and tests ---
+# Added patterns for modern secrets like JWTs, cloud provider keys, and crypto keys.
 TRUFFLEHOG_REGEXES = {
     "Slack Token": r"(xox[pborsa]-[0-9]{12}-[0-9]{12}-[0-9]{12}-[a-z0-9]{32})",
     "RSA private key": r"-----BEGIN RSA PRIVATE KEY-----",
@@ -206,7 +249,6 @@ TRUFFLEHOG_REGEXES = {
     "Twilio API Key": r"SK[0-9a-fA-F]{32}",
     "Twitter Access Token": r"[tT][wW][iI][tT][tT][eE][rR].*[1-9][0-9]+-[0-9a-zA-Z]{40}",
     "Twitter OAuth": r"[tT][wW][iI][tT][tT][eE][rR].*['\"]?[0-9a-zA-Z]{35,44}['\"]?",
-    # --- NEW PATTERNS ---
     "JSON Web Token": r"ey[A-Za-z0-9-_=]+\.ey[A-Za-z0-9-_=]+\.?[A-Za-z0-9-_.+/=]*",
     "Azure Client Secret": r"[A-Za-z0-9\._~\-]{40}",
     "Google Cloud API Key": r"[A-Za-z0-9_]{21}--[A-Za-z0-9_]{8}",
@@ -219,7 +261,8 @@ COMPILED_TRUFFLEHOG_REGEXES = {name: re.compile(pattern) for name, pattern in TR
 # Debug info regex pattern
 DEBUG_INFO_PATTERN = re.compile(r'\b(?:env\.[A-Za-z_]+|AWS_[A-Z_]+|AZURE_[A-Z_]+|DEBUG|ERROR)\b')
 
-# Default test values for parameters by type
+# --- IMPROVEMENT: Better test values ---
+# Added common security-related payloads and more realistic Base64 examples.
 TEST_VALUES = {
     "integer": [1, 0, -1, 100, 999999],
     "string": [
@@ -282,16 +325,17 @@ def log(message, level="INFO"):
 
 def print_banner():
     """
-    Prints the ASCII banner for Autoswagger with intruder.io link in yellow.
+    Prints the ASCII banner for Autoswagger2 with jservlet.com link in yellow.
     Called if not in product mode, to show the standard header.
     """
-    banner = f"""[white]
-      /   | __  __/ /_____  ______      ______ _____ _____ ____  _____
-     / /| |/ / / / __/ __ \\/ ___/ | /| / / __ `/ __ `/ __ `/ _ \\/ ___/
-    / ___ / /_/ / /_/ /_/ (__  )| |/ |/ / /_/ / /_/ / /_/ /  __/ /
-    /_/  |_\\__,_/\\__/\\____/____/ |__/|__/_\\__,_/\\__, /\\__, /\\___/_/
-                                              /____//____/[/white]
-                              [yellow]https://intruder.io[/yellow]
+    banner = fr"""[white]
+    ___         __       _____                                    ___ 
+   /   | __  __/ /_____ / ___/      ______ _____ _____ ____  ____|__ \
+  / /| |/ / / / __/ __ \\__ \ | /| / / __ `/ __ `/ __ `/ _ \/ ___/_/ /
+ / ___ / /_/ / /_/ /_/ /__/ / |/ |/ / /_/ / /_/ / /_/ /  __/ /  / __/ 
+/_/  |_\__,_/\__/\____/____/|__/|__/\__,_/\__, /\__, /\___/_/  /____/ 
+                                         /____//____/    [/white]
+                              [yellow]https://jservlet.com[/yellow]
                           Find unauthenticated endpoints
     """
     console.print(banner)
@@ -1424,9 +1468,9 @@ def main(urls, verbose, include_risk, include_all, product_mode, stats_flag, rat
 # Entry point
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description="Autoswagger: Detect unauthenticated access control issues via Swagger/OpenAPI documentation.",
+        description="AutoSwagger2: Detect unauthenticated access control issues via Swagger2/OpenAPI documentation.",
         formatter_class=argparse.RawTextHelpFormatter,
-        epilog="Example usage:\n  python autoswagger.py https://api.example.com -v "
+        epilog="Example usage:\n  python autoswagger2.py https://api.example.com -v "
     )
     parser.add_argument("urls", nargs="*", help="Base URL(s) or spec URL(s) of the target API(s)")
     parser.add_argument("-v", "--verbose", action="store_true", help="Enable verbose output")

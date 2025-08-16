@@ -1,15 +1,39 @@
-# [Autoswagger](https://www.intruder.io/research/broken-authorization-apis-autoswagger) by [Intruder](https://intruder.io/)
-<a href="https://intruder.io/">
-  <img width="966" alt="output" src="https://github.com/user-attachments/assets/e502abaf-426c-4fab-ad60-d7b5dcd730d8" />
+# [Autoswagger2](https://github.com/javaguru/autoswagger) by **[Franck Andriano.](http://jservlet.com)**
+<a href="http://jservlet.com">
+  <img width="966" alt="output" src="https://github.com/javaguru/autoswagger/blob/main/image/output.png" />
 </a>
 <br>  
 <br>  
 
-**[Autoswagger](https://www.intruder.io/research/broken-authorization-apis-autoswagger)** is a command-line tool designed to discover, parse, and test for unauthenticated endpoints using **Swagger/OpenAPI** documentation. It helps identify potential security issues in unprotected endpoints of APIs, such as PII leaks and common secret exposures.
+Original creation by [Intruder](https://intruder.io/) 
+**[Autoswagger](https://www.intruder.io/research/broken-authorization-apis-autoswagger)**
 
-**Please note that this initial release of Autoswagger is by no means complete, and there are some types of specification which the tool does not currently handle. Please feel free to use it as you wish, and extend its detection capabilities or add detection regexes to cover your specific use-case!**
+This script has been significantly enhanced from the original version.
+Key improvements are detailed below:
 
----
+1. Advanced Spec Discovery Engine:
+   - Context-Aware Searching: The discovery logic now prioritizes searching within the user-provided URL path
+     (e.g., /app-context/) before falling back to the server root, making it effective for non-root applications.
+   - Intelligent URL Handling: It correctly distinguishes between direct spec URLs, Swagger UI pages, and base URLs,
+     and follows the appropriate discovery path for each.
+   - Spring Boot / springdoc-openapi Compatibility: The parser now correctly handles the `configUrl` property
+     found in modern Swagger UI initializers, allowing it to follow multi-step configurations to find the true spec URL.
+   - Default Configuration Filtering: Actively ignores the default "petstore.swagger.io" example URL to prevent false positives.
+
+2. Enhanced Security Analysis Capabilities:
+   - Expanded discovery paths based on Nuclei templates
+   - Secret Detection (TruffleHog Patterns): The list of regex patterns has been significantly expanded to detect
+     modern secrets, including JSON Web Tokens (JWT), Azure and Google Cloud credentials, and Ethereum private keys.
+   - PII (Personally Identifiable Information) Detection: Integrated the 'presidio-analyzer' library to scan
+     API responses for sensitive personal data like names, emails, phone numbers, and addresses.
+   - Improved Test Payloads: The `TEST_VALUES` dictionary has been updated with more relevant security test cases,
+     including basic SQL Injection and XSS payloads, and more realistic Base64-encoded values.
+
+3. General & Quality-of-Life Improvements:
+    - Custom User-Agent: All outgoing HTTP requests now use a 'AutoSwagger' User-Agent for better identification in server logs.
+    - Robustness: Fixed a critical bug ('prop' vs 'schema' typo) that could cause crashes when parsing complex schemas.
+    - Expanded Path Lists: Added more common paths to `SWAGGER_UI_PATHS` and `DIRECT_SPEC_PATHS` to increase the success rate of discovery.
+    - Modernized Output: Replaced basic print statements with the 'rich' library for clear, formatted tables and progress bars.
 
 ## Table of Contents
 1. [Introduction](#introduction)
@@ -58,9 +82,9 @@ Autoswagger automates the process of finding **OpenAPI/Swagger** specifications,
 
 ## Installation & Usage
 
-1. **Clone** or **download** the repository containing Autoswagger.
+1. **Clone** or **download** the repository containing AutoSwagger2.
    ```bash
-   git clone git@github.com:intruder-io/autoswagger.git
+   git clone git@github.com:javaguru/autoswagger.git
    ```
 
 
@@ -73,7 +97,7 @@ Autoswagger automates the process of finding **OpenAPI/Swagger** specifications,
 
 3. **Check installation, show help:**
   ```bash
-  python3 autoswagger.py -h
+  python3 autoswagger2.py -h
   ```
 
 
@@ -96,19 +120,18 @@ Autoswagger automates the process of finding **OpenAPI/Swagger** specifications,
 ## Help
 
 ```
-
-
-      /   | __  __/ /_____  ______      ______ _____ _____ ____  _____
-     / /| |/ / / / __/ __ \/ ___/ | /| / / __ `/ __ `/ __ `/ _ \/ ___/
-    / ___ / /_/ / /_/ /_/ (__  )| |/ |/ / /_/ / /_/ / /_/ /  __/ /
-    /_/  |_\__,_/\__/\____/____/ |__/|__/_\__,_/\__, /\__, /\___/_/
-                                              /____//____/
-                              https://intruder.io
+    ___         __       _____                                    ___
+   /   | __  __/ /_____ / ___/      ______ _____ _____ ____  ____|__ \
+  / /| |/ / / / __/ __ \\__ \ | /| / / __ `/ __ `/ __ `/ _ \/ ___/_/ /
+ / ___ / /_/ / /_/ /_/ /__/ / |/ |/ / /_/ / /_/ / /_/ /  __/ /  / __/
+/_/  |_\__,_/\__/\____/____/|__/|__/\__,_/\__, /\__, /\___/_/  /____/
+                                         /____//____/
+                              https://jservlet.com
                           Find unauthenticated endpoints
 
-usage: autoswagger.py [-h] [-v] [-risk] [-all] [-product] [-stats] [-rate RATE] [-b] [-json] [urls ...]
+usage: autoswagger2.py [-h] [-v] [-risk] [-all] [-product] [-stats] [-rate RATE] [-b] [-json] [urls ...]
 
-Autoswagger: Detect unauthenticated access control issues via Swagger/OpenAPI documentation.
+Autoswagger2: Detect unauthenticated access control issues via Swagger2/OpenAPI documentation.
 
 positional arguments:
   urls           Base URL(s) or spec URL(s) of the target API(s)
@@ -125,7 +148,7 @@ options:
   -json          Output results in JSON format in default mode.
 
 Example usage:
-  python autoswagger.py https://api.example.com -v
+  python autoswagger2.py https://api.example.com -v
 
 ```
 ## Discovery Phases
@@ -213,5 +236,5 @@ Simple GET endpoints can be triaged using command line tools like curl, but we w
 
 ## Acknowledgments
 
-Autoswagger is maintained and owned by **[Intruder](https://intruder.io/)**. It was primarily developed by Cale Anderson
+Autoswagger2 **[Franck ANDRIANO.](http://jservlet.com)** (It was primarily maintained by **[Intruder](https://intruder.io/)** and primarily developed by Cale Anderson)
 
