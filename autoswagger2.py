@@ -369,11 +369,11 @@ def print_banner():
     Called if not in product mode, to show the standard header.
     """
     banner = fr"""[white]
-    ___         __       _____                                    ___ 
-   /   | __  __/ /_____ / ___/      ______ _____ _____ ____  ____|__ \
-  / /| |/ / / / __/ __ \\__ \ | /| / / __ `/ __ `/ __ `/ _ \/ ___/_/ /
- / ___ / /_/ / /_/ /_/ /__/ / |/ |/ / /_/ / /_/ / /_/ /  __/ /  / __/ 
-/_/  |_\__,_/\__/\____/____/|__/|__/\__,_/\__, /\__, /\___/_/  /____/ 
+    ___         __       _____                                   [red] ___ [/red]
+   /   | __  __/ /_____ / ___/      ______ _____ _____ ____  ____[red]|__ \ [/red]
+  / /| |/ / / / __/ __ \\__ \ | /| / / __ `/ __ `/ __ `/ _ \/ ___/[red]_/ / [/red]
+ / ___ / /_/ / /_/ /_/ /__/ / |/ |/ / /_/ / /_/ / /_/ /  __/ /  [red]/ __/ [/red]
+/_/  |_\__,_/\__/\____/____/|__/|__/\__,_/\__, /\__, /\___/_/  [red]/____/ [/red]
                                          /____//____/    [/white]
                               [yellow]https://jservlet.com[/yellow]
                           Find unauthenticated endpoints
@@ -431,7 +431,7 @@ def build_array_item(item_schema, value_index=0):
     """
     Builds an array item from the given schema.
     If the schema is an object or contains properties, delegates to build_nested_object.
-    Otherwise chooses from test values by type.
+    Otherwise, chooses from test values by type.
     """
     if 'properties' in item_schema or item_schema.get('type') == 'object':
         return build_nested_object(item_schema, value_index)
