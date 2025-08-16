@@ -1,6 +1,6 @@
-# [AutoSwagger2](https://github.com/javaguru/autoswagger) by **[Franck Andriano.](http://jservlet.com)**
+# [AutoSwagger2](https://github.com/javaguru/autoswagger2) by **[Franck Andriano.](http://jservlet.com)**
 <a href="http://jservlet.com">
-  <img width="966" alt="output" src="https://github.com/javaguru/autoswagger/blob/master/image/output.png" />
+  <img width="966" alt="output" src="https://github.com/javaguru/autoswagger2/blob/master/image/output.png" />
 </a>
 <br>  
 <br>  
@@ -89,7 +89,7 @@ AutoSwagger2 automates the process of finding **OpenAPI/Swagger** specifications
 
 1. **Clone** or **download** the repository containing AutoSwagger2.
    ```bash
-   git clone git@github.com:javaguru/autoswagger.git
+   git clone git@github.com:javaguru/autoswagger2.git
    ```
 
 
@@ -241,7 +241,7 @@ Simple GET endpoints can be triaged using command line tools like curl, but we w
 
 ## License
 
-This project is an Open Source Software released under the [BSD 3-Clause License](https://github.com/javaguru/autoswagger/blob/master/LICENSE).
+This project is an Open Source Software released under the [BSD 3-Clause License](https://github.com/javaguru/autoswagger2/blob/master/LICENSE).
 
 ---
 
