@@ -44,7 +44,6 @@ from urllib.parse import urljoin, urlencode, urlparse
 
 import requests
 import urllib3
-from bs4 import BeautifulSoup
 from dicttoxml import dicttoxml
 import yaml
 import xml.etree.ElementTree as ET
@@ -58,7 +57,6 @@ from presidio_analyzer import AnalyzerEngine, RecognizerRegistry, Pattern, Patte
 from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TimeElapsedColumn
 from rich.table import Table
-from rich.logging import RichHandler
 import logging
 
 # ------------------------------
