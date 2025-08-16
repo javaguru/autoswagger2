@@ -960,11 +960,15 @@ def extract_spec_from_content(content, base_url, verbose=False):
                 if 'urls' in config_json and config_json['urls']:
                     spec_path = config_json['urls'][0]['url']
                     full_spec_url = urljoin(full_config_url, spec_path)
-                    if verbose:
-                        log(f"Found final spec URL via configUrl: {full_spec_url}", level="DEBUG")
-                    spec = fetch_swagger_spec(full_spec_url, verbose)
-                    if spec:
-                        return spec, full_spec_url
+                    if "petstore.swagger.io" in full_spec_url:
+                        if verbose:
+                            log(f"Ignoring default Petstore URL found via configUrl: {full_spec_url}", level="DEBUG")
+                    else:
+                        if verbose:
+                            log(f"Found final spec URL via configUrl: {full_spec_url}", level="DEBUG")
+                        spec = fetch_swagger_spec(full_spec_url, verbose)
+                        if spec:
+                            return spec, full_spec_url
         except (requests.exceptions.RequestException, json.JSONDecodeError) as e:
             if verbose:
                 log(f"Failed to process configUrl {full_config_url}: {e}", level="DEBUG")
@@ -976,11 +980,15 @@ def extract_spec_from_content(content, base_url, verbose=False):
         # Avoid matching the configUrl line again
         if "swagger-config" not in spec_path:
             full_spec_url = urljoin(base_url, spec_path)
-            if verbose:
-                log(f"Found fallback 'url': {full_spec_url}", level="DEBUG")
-            spec = fetch_swagger_spec(full_spec_url, verbose)
-            if spec:
-                return spec, full_spec_url
+            if "petstore.swagger.io" in full_spec_url:
+                if verbose:
+                    log(f"Ignoring default Petstore URL found in 'url' field: {full_spec_url}", level="DEBUG")
+            else:
+                if verbose:
+                    log(f"Found fallback 'url': {full_spec_url}", level="DEBUG")
+                spec = fetch_swagger_spec(full_spec_url, verbose)
+                if spec:
+                    return spec, full_spec_url
 
     # 3. Fallback to embedded spec
     emb = extract_spec_from_js(content)
