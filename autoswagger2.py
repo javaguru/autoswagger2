@@ -44,7 +44,6 @@ from urllib.parse import urljoin, urlencode, urlparse
 
 import requests
 import urllib3
-from bs4 import BeautifulSoup
 from dicttoxml import dicttoxml
 import yaml
 import xml.etree.ElementTree as ET
@@ -58,7 +57,6 @@ from presidio_analyzer import AnalyzerEngine, RecognizerRegistry, Pattern, Patte
 from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TimeElapsedColumn
 from rich.table import Table
-from rich.logging import RichHandler
 import logging
 
 # ------------------------------
@@ -727,8 +725,8 @@ def send_request(method, base_url_no_path, full_path, parameters, value_mapping,
 
         if pii_data:
             for entity_type in pii_data:
-                pii_data[entity_type]['values'] = list(pii_data[entity_type]['values'])[:2]
-                pii_data[entity_type]['detection_methods'] = list(pii_data[entity_type]['detection_methods'])
+                pii_data[entity_type]['values'] = set(pii_data[entity_type]['values'])[:2]
+                pii_data[entity_type]['detection_methods'] = set(pii_data[entity_type]['detection_methods'])
 
         # Mark interesting if 200 (or 404 if include_all) plus big or has PII
         if status_code == 200 or (include_all and status_code == 404):
@@ -810,6 +808,7 @@ def test_endpoint(base_url, base_path, path_template, method, parameters, reques
     Prepares final path by combining base_path with path_template, then calls test_parameter_values.
     Returns a list of results from that function.
     """
+    global start_time
     if base_path and not base_path.startswith("/"):
         base_path = "/" + base_path
     # Normalize base_path by removing trailing slash if it's not just "/"
