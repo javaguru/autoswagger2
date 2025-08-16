@@ -55,7 +55,7 @@ Key improvements are detailed below:
 
 ## Introduction
 
-Autoswagger automates the process of finding **OpenAPI/Swagger** specifications, extracting API endpoints, and systematically testing them for **PII** exposure, **secrets**, and large or interesting responses. It leverages **Presidio** for PII recognition and **regex** for sensitive key/token detection.
+AutoSwagger2 automates the process of finding **OpenAPI/Swagger** specifications, extracting API endpoints, and systematically testing them for **PII** exposure, **secrets**, and large or interesting responses. It leverages **Presidio** for PII recognition and **regex** for sensitive key/token detection.
 
 ---
 
@@ -239,7 +239,13 @@ Simple GET endpoints can be triaged using command line tools like curl, but we w
 
 ---
 
+## License
+
+This project is an Open Source Software released under the [BSD 3-Clause License](https://github.com/javaguru/autoswagger/blob/master/LICENSE).
+
+---
+
 ## Acknowledgments
 
-Autoswagger2 **[Franck ANDRIANO.](http://jservlet.com)** (It was primarily maintained by **[Intruder](https://intruder.io/)** and primarily developed by Cale Anderson)
+AutoSwagger2 **[Franck ANDRIANO.](http://jservlet.com)** (AutoSwagger was primarily maintained by **[Intruder](https://intruder.io/)** and primarily developed by Cale Anderson)
 
