@@ -44,6 +44,7 @@ from urllib.parse import urljoin, urlencode, urlparse
 
 import requests
 import urllib3
+from bs4 import BeautifulSoup
 from dicttoxml import dicttoxml
 import yaml
 import xml.etree.ElementTree as ET
@@ -57,6 +58,7 @@ from presidio_analyzer import AnalyzerEngine, RecognizerRegistry, Pattern, Patte
 from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TimeElapsedColumn
 from rich.table import Table
+from rich.logging import RichHandler
 import logging
 
 # ------------------------------
@@ -1284,10 +1286,12 @@ def main(urls, verbose, include_risk, include_all, product_mode, stats_flag, rat
                             stats["hosts_with_pii"] += 1
                             if 'pii_detection_details' in rr and rr['pii_detection_details']:
                                 for details in rr['pii_detection_details'].values():
-                                    if 'detection_methods' in details:
-                                        stats["pii_detection_methods"].update(details['detection_methods'])
+                                    if 'detection_methods' in details and details['detection_methods']:
+                                        for method in details['detection_methods']:
+                                            stats["pii_detection_methods"].add(method)
                             if 'regex_patterns_found' in rr and rr['regex_patterns_found']:
-                                stats["regexes_found"].update(rr['regex_patterns_found'].values())
+                                for pattern in rr['regex_patterns_found'].values():
+                                    stats["regexes_found"].add(pattern)
         else:
             if verbose:
                 log(f"No valid Swagger/OpenAPI spec found for {base_url}.", level="DEBUG")
