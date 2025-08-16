@@ -130,6 +130,7 @@ TIMEOUT = 10
 # Paths for detecting swagger/openapi specs in UI or direct spec endpoints
 SWAGGER_UI_PATHS = sorted({
     "/", "/apidocs/", "/swagger/ui/index", "/swagger/index.html", "/swagger-ui.html",
+    "/swagger-ui/index.html", # <<< FIX: ADDED THIS COMMON PATH
     "/swagger/swagger-ui.html", "/api/swagger-ui.html", "/api_docs", "/api/index.html",
     "/api/doc", "/api/docs/", "/api/swagger/index.html", "/api/swagger/swagger-ui.html",
     "/api/swagger-ui/api-docs", "/api/api-docs", "/api/apidocs", "/api/swagger",
@@ -165,7 +166,8 @@ DIRECT_SPEC_PATHS = sorted({
     "/spec/swagger.yaml", "/spec/openapi.json", "/spec/openapi.yaml",
     "/api-docs/swagger-ui.json", "/api-docs/swagger-ui.yaml",
     "/api-docs/openapi.json", "/api-docs/openapi.yaml",
-    "/swagger-ui.json", "/swagger-ui.yaml"
+    "/swagger-ui.json", "/swagger-ui.yaml",
+    "/v2/api-docs", "/v3/api-docs", # <<< FIX: ADDED COMMON SPRINGDOC PATHS
 })
 
 # Regex patterns for secrets (similar to TruffleHog)
@@ -357,7 +359,7 @@ def build_request_body(schema, content_type, value_index=0):
     if not schema:
         return None
 
-    if 'oneOf' in schema or 'anyOf' in schema or 'allOf' in schema:
+    if 'oneOf' in schema or 'anyOf' in schema or 'allOf' in prop:
         body = handle_composite_schemas(schema, value_index)
     elif schema.get('type') == 'array':
         item_schema = schema.get('items', {})
@@ -935,117 +937,109 @@ def fetch_swagger_spec(url, verbose=False):
             log(f"Error fetching Swagger/OpenAPI spec from {url}: {e}", level="DEBUG")
     return None
 
-def find_swagger_ui_docs(base_url, verbose=False):
+def extract_spec_from_content(content, base_url, verbose=False):
     """
-    Attempts to detect a Swagger UI at known paths by scanning for references
-    to swagger/openapi in the HTML or embedded JavaScript. If found, attempts
-    to parse the discovered spec path or extract an embedded spec.
-    Returns a tuple of (spec, spec_url) or (None, None).
+    Intelligently extracts the spec from JS/HTML content, prioritizing configUrl.
     """
-    for pth in SWAGGER_UI_PATHS:
-        swagger_ui_url = urljoin(base_url, pth)
+    # 1. Prioritize configUrl (common in springdoc)
+    config_url_match = re.search(r'["\']?configUrl["\']?\s*:\s*["\']([^"]+)["\']', content)
+    if config_url_match:
+        config_path = config_url_match.group(1)
+        full_config_url = urljoin(base_url, config_path)
         if verbose:
-            log(f"Checking Swagger UI page at {swagger_ui_url}", level="DEBUG")
+            log(f"Found configUrl: {full_config_url}", level="DEBUG")
         try:
-            r = requests.get(swagger_ui_url, verify=False, allow_redirects=False, timeout=TIMEOUT)
-            if r.status_code == 200 and ('swagger' in r.text.lower() or 'openapi' in r.text.lower()):
-                if verbose:
-                    log(f"Swagger UI found at {swagger_ui_url}", level="DEBUG")
-                spec_url = extract_spec_url_from_html(r.text)
-                if spec_url:
-                    full_spec_url = urljoin(swagger_ui_url, spec_url)
+            config_resp = requests.get(full_config_url, verify=False, timeout=TIMEOUT)
+            if config_resp.status_code == 200:
+                config_json = config_resp.json()
+                if 'urls' in config_json and config_json['urls']:
+                    spec_path = config_json['urls'][0]['url']
+                    full_spec_url = urljoin(full_config_url, spec_path)
                     if verbose:
-                        log(f"Found Swagger spec URL in HTML: {full_spec_url}", level="DEBUG")
-                    if any(full_spec_url.lower().endswith(ext) for ext in ['.json', '.yaml', '.yml']):
-                        sp = fetch_swagger_spec(full_spec_url, verbose)
-                        if sp:
-                            return sp, full_spec_url
-                    else:
-                        if verbose:
-                            log(f"Spec URL does not have a valid spec extension: {full_spec_url}", level="DEBUG")
-                        if full_spec_url.lower().endswith('.js'):
-                            try:
-                                js_r = requests.get(full_spec_url, verify=False, timeout=TIMEOUT)
-                                if js_r.status_code == 200:
-                                    if verbose:
-                                        log(f"Attempting to extract embedded spec from JS file: {full_spec_url}", level="DEBUG")
-                                    emb = extract_spec_from_js(js_r.text)
-                                    if emb and isinstance(emb, dict):
-                                        if verbose:
-                                            log(f"Extracted embedded Swagger spec from JS file: {full_spec_url}", level="DEBUG")
-                                        return emb, full_spec_url
-                            except requests.exceptions.RequestException as e:
-                                if verbose:
-                                    log(f"Error fetching JS file {full_spec_url}: {e}", level="DEBUG")
-                js_files = re.findall(r'<script\s+src=["\']([^"\']+\.js)["\']', r.text, re.IGNORECASE)
-                if verbose:
-                    log(f"Found {len(js_files)} JavaScript files to analyze.", level="DEBUG")
-                js_files = [x for x in js_files if is_local_js_file(x, swagger_ui_url)]
-                if verbose:
-                    log(f"{len(js_files)} JavaScript files are local and will be analyzed.", level="DEBUG")
-                js_files_sorted = sorted(js_files, key=lambda x: 'init' in x.lower(), reverse=True)
-                for jsf in js_files_sorted:
-                    jsu = urljoin(swagger_ui_url, jsf)
-                    if verbose:
-                        log(f"Fetching JS file: {jsu}", level="DEBUG")
-                    try:
-                        js_resp = requests.get(jsu, verify=False, timeout=TIMEOUT)
-                        if js_resp.status_code == 200:
-                            spec_url_js = extract_spec_url_from_js(js_resp.text)
-                            if spec_url_js:
-                                full_spec_url_js = urljoin(jsu, spec_url_js)
-                                if verbose:
-                                    log(f"Found Swagger spec URL in JS: {full_spec_url_js}", level="DEBUG")
-                                if any(full_spec_url_js.lower().endswith(ext) for ext in ['.json', '.yaml', '.yml']):
-                                    sp2 = fetch_swagger_spec(full_spec_url_js, verbose)
-                                    if sp2:
-                                        return sp2, full_spec_url_js
-                                else:
-                                    if full_spec_url_js.lower().endswith('.js'):
-                                        try:
-                                            nested_js = requests.get(full_spec_url_js, verify=False, timeout=TIMEOUT)
-                                            if nested_js.status_code == 200:
-                                                emb2 = extract_spec_from_js(nested_js.text)
-                                                if emb2 and isinstance(emb2, dict):
-                                                    if verbose:
-                                                        log(f"Extracted embedded Swagger spec from nested JS file: {full_spec_url_js}", level="DEBUG")
-                                                    return emb2, full_spec_url_js
-                                        except requests.exceptions.RequestException as e:
-                                            if verbose:
-                                                log(f"Error fetching nested JS file {full_spec_url_js}: {e}", level="DEBUG")
-                            emb = extract_spec_from_js(js_resp.text)
-                            if emb and isinstance(emb, dict):
-                                if verbose:
-                                    log(f"Extracted embedded Swagger spec from JS file: {jsu}", level="DEBUG")
-                                return emb, jsu
-                    except requests.exceptions.RequestException as e:
-                        if verbose:
-                            log(f"Error fetching JS file {jsu}: {e}", level="DEBUG")
-                spec_url_swash = extract_swashbuckle_config_spec_url(r.text)
-                if spec_url_swash:
-                    full_swash_url = urljoin(swagger_ui_url, spec_url_swash)
-                    if verbose:
-                        log(f"Found Swagger spec URL via swashbuckleConfig: {full_swash_url}", level="DEBUG")
-                    sp3 = fetch_swagger_spec(full_swash_url, verbose)
-                    if sp3:
-                        return sp3, full_swash_url
-        except requests.exceptions.RequestException as e:
+                        log(f"Found final spec URL via configUrl: {full_spec_url}", level="DEBUG")
+                    spec = fetch_swagger_spec(full_spec_url, verbose)
+                    if spec:
+                        return spec, full_spec_url
+        except (requests.exceptions.RequestException, json.JSONDecodeError) as e:
             if verbose:
-                log(f"Error checking Swagger UI page at {swagger_ui_url}: {e}", level="DEBUG")
+                log(f"Failed to process configUrl {full_config_url}: {e}", level="DEBUG")
+
+    # 2. Fallback to simple 'url' if configUrl fails or is not present
+    spec_url_match = re.search(r'["\']?url["\']?\s*:\s*["\']([^"]+)["\']', content)
+    if spec_url_match:
+        spec_path = spec_url_match.group(1)
+        # Avoid matching the configUrl line again
+        if "swagger-config" not in spec_path:
+            full_spec_url = urljoin(base_url, spec_path)
+            if verbose:
+                log(f"Found fallback 'url': {full_spec_url}", level="DEBUG")
+            spec = fetch_swagger_spec(full_spec_url, verbose)
+            if spec:
+                return spec, full_spec_url
+
+    # 3. Fallback to embedded spec
+    emb = extract_spec_from_js(content)
+    if emb and isinstance(emb, dict):
+        if verbose:
+            log(f"Extracted embedded Swagger spec from content of: {base_url}", level="DEBUG")
+        return emb, base_url
+
     return None, None
 
-def extract_swashbuckle_config_spec_url(html_text):
+def parse_swagger_ui_page(page_url, verbose=False):
     """
-    Extracts a discovery path from window.swashbuckleConfig in the HTML if it exists.
-    Returns the string path or None.
+    Fetches a single URL, assumes it's a Swagger UI HTML page, and tries to find the spec URL within it.
     """
-    match = re.search(r'window\.swashbuckleConfig\s*=\s*{([\s\S]*?)};', html_text)
-    if match:
-        config_content = match.group(1)
-        disc_paths = re.findall(r'discoveryPaths\s*:\s*\[\s*["\']([^"\']+)["\']\s*\]', config_content)
-        if disc_paths:
-            return disc_paths[0]
-    return None
+    if verbose:
+        log(f"Parsing provided URL as a potential Swagger UI page: {page_url}", level="DEBUG")
+    try:
+        r = requests.get(page_url, verify=False, allow_redirects=True, timeout=TIMEOUT)
+        if r.status_code == 200 and ('swagger' in r.text.lower() or 'openapi' in r.text.lower()):
+            if verbose:
+                log(f"Content at {page_url} looks like a Swagger UI page.", level="DEBUG")
+
+            # First, check linked JS files as they are the most reliable source
+            js_files = re.findall(r'<script\s+src=["\']([^"\']+\.js)["\']', r.text, re.IGNORECASE)
+            js_files = [x for x in js_files if is_local_js_file(x, page_url)]
+            js_files_sorted = sorted(js_files, key=lambda x: 'initializer' in x.lower(), reverse=True)
+
+            for jsf in js_files_sorted:
+                jsu = urljoin(page_url, jsf)
+                if verbose:
+                    log(f"Analyzing JS file: {jsu}", level="DEBUG")
+                try:
+                    js_resp = requests.get(jsu, verify=False, timeout=TIMEOUT)
+                    if js_resp.status_code == 200:
+                        spec, spec_url = extract_spec_from_content(js_resp.text, jsu, verbose)
+                        if spec:
+                            return spec, spec_url
+                except requests.exceptions.RequestException:
+                    continue
+
+            # If nothing found in JS, check for inline declarations in the HTML itself
+            spec, spec_url = extract_spec_from_content(r.text, page_url, verbose)
+            if spec:
+                return spec, spec_url
+
+    except requests.exceptions.RequestException as e:
+        if verbose:
+            log(f"Error checking Swagger UI page at {page_url}: {e}", level="DEBUG")
+    return None, None
+
+def find_swagger_ui_docs(base_url, verbose=False):
+    """
+    Attempts to detect a Swagger UI at known paths, relative to the base_url.
+    """
+    base_url_with_slash = base_url if base_url.endswith('/') else base_url + '/'
+    for pth in SWAGGER_UI_PATHS:
+        # urljoin handles joining correctly if the second part doesn't have a leading slash
+        swagger_ui_url = urljoin(base_url_with_slash, pth.lstrip('/'))
+        if verbose:
+            log(f"Checking Swagger UI page at {swagger_ui_url}", level="DEBUG")
+        spec, spec_url = parse_swagger_ui_page(swagger_ui_url, verbose)
+        if spec:
+            return spec, spec_url
+    return None, None
 
 def is_local_js_file(js_file_url, base_url):
     """
@@ -1056,44 +1050,6 @@ def is_local_js_file(js_file_url, base_url):
     if not parsed_js.netloc or parsed_js.netloc == parsed_base.netloc:
         return True
     return False
-
-def extract_spec_url_from_html(html_text):
-    """
-    Extracts a potential swagger spec URL from HTML content
-    by searching for 'url: "..."' patterns or SwaggerUIBundle references.
-    """
-    matches = re.findall(r'url:\s*["\'](.*?)["\']', html_text)
-    if matches:
-        return matches[0]
-    matches = re.findall(r'SwaggerUIBundle\s*\(\s*{\s*url:\s*"(.*?)"', html_text, re.DOTALL)
-    if matches:
-        return matches[0]
-    soup = BeautifulSoup(html_text, 'html.parser')
-    for script in soup.find_all('script'):
-        sc = script.string
-        if sc and 'url:' in sc:
-            mm = re.findall(r'url:\s*"(.*?)"', sc)
-            if mm:
-                return mm[0]
-    return None
-
-def extract_spec_url_from_js(js_text):
-    """
-    Extracts a swagger spec URL from JavaScript code by searching for
-    various patterns like 'url: "..."', 'urls:[ { url:"..." } ]', etc.
-    """
-    patterns = [
-        r'url:\s*["\'](.*?)["\']',
-        r'urls:\s*\[\s*{\s*url:\s*["\'](.*?)["\']',
-        r'const\s+\w+\s*=\s*["\'](.*?)["\']',
-        r'defaultDefinitionUrl\s*=\s*["\'](.*?)["\']',
-        r'definitionURL\s*=\s*["\'](.*?)["\']',
-    ]
-    for pat in patterns:
-        matches = re.findall(pat, js_text)
-        if matches:
-            return matches[0]
-    return None
 
 def extract_spec_from_js(js_text):
     """
@@ -1190,53 +1146,57 @@ def main(urls, verbose, include_risk, include_all, product_mode, stats_flag, rat
         swagger_spec = None
         spec_url = None
 
-        # --- NEW FIX: START ---
-        # First, ALWAYS try to treat the provided URL as the direct spec location
+        # --- NEW LOGIC ---
+        # Step 1: Try to fetch the URL as a direct spec file.
         if not product_mode:
             log(f"Attempting to fetch spec directly from provided URL: {base_url}", level="INFO")
-
         swagger_spec = fetch_swagger_spec(base_url, verbose)
         if swagger_spec:
             spec_url = base_url
         else:
-            # If that fails, proceed with original discovery logic
+            # Step 2: If it's not a spec file, try to parse it as a Swagger UI HTML page.
             if not product_mode:
-                log(f"Provided URL is not a spec file. Starting discovery...", level="INFO")
+                log(f"Provided URL is not a spec file. Attempting to parse as a Swagger UI page...", level="INFO")
+            swagger_spec, spec_url = parse_swagger_ui_page(base_url, verbose)
 
-            # Use only the scheme and host for discovery, not the full path
-            discovery_root_url = f"{parsed_input_url.scheme}://{parsed_input_url.netloc}"
-
-            # Phase 1 & 2: Look for swagger UI
-            swagger_spec, spec_url = find_swagger_ui_docs(discovery_root_url, verbose)
-
-            # Phase 3: Direct spec path detection if UI not found
+            # Step 3: If both above fail, start the full discovery process from the URL's path context.
             if not swagger_spec:
-                if verbose:
-                    log(f"Proceeding to Phase 3: Direct Spec Path Detection for {discovery_root_url}", level="DEBUG")
-                for pth in DIRECT_SPEC_PATHS:
-                    current_spec_url = urljoin(discovery_root_url, pth)
-                    if verbose:
-                        log(f"Attempting to fetch spec from direct path: {current_spec_url}", level="DEBUG")
-                    sws = fetch_swagger_spec(current_spec_url, verbose)
-                    if sws:
-                        swagger_spec = sws
-                        spec_url = current_spec_url
-                        if not product_mode:
-                            log(f"Spec identified via direct path detection: {spec_url}", level="INFO")
-                        break
-        # --- NEW FIX: END ---
+                if not product_mode:
+                    log(f"Could not find spec from provided URL. Starting discovery within path: {parsed_input_url.path}", level="INFO")
+                swagger_spec, spec_url = find_swagger_ui_docs(base_url, verbose)
+
+                # Step 4: Final fallback to the server root if context search failed
+                if not swagger_spec and parsed_input_url.path not in ('', '/'):
+                    if not product_mode:
+                        log(f"Discovery within path failed. Falling back to discovery from server root...", level="INFO")
+                    discovery_root_url = f"{parsed_input_url.scheme}://{parsed_input_url.netloc}"
+                    swagger_spec, spec_url = find_swagger_ui_docs(discovery_root_url, verbose)
+
+                    if not swagger_spec:
+                        if verbose:
+                            log(f"Proceeding to Phase 3: Direct Spec Path Detection from {discovery_root_url}", level="DEBUG")
+                        for pth in DIRECT_SPEC_PATHS:
+                            current_spec_url = urljoin(discovery_root_url, pth)
+                            if verbose:
+                                log(f"Attempting to fetch spec from direct path: {current_spec_url}", level="DEBUG")
+                            sws = fetch_swagger_spec(current_spec_url, verbose)
+                            if sws:
+                                swagger_spec = sws
+                                spec_url = current_spec_url
+                                if not product_mode:
+                                    log(f"Spec identified via direct path detection: {spec_url}", level="INFO")
+                                break
+        # --- END NEW LOGIC ---
 
         if swagger_spec:
             with lock:
                 stats["hosts_with_valid_spec"] += 1
-            if not product_mode and not any(base_url.lower().endswith(ext) for ext in ['.json', '.yaml', '.yml']):
+            if not product_mode:
                 log("Successfully loaded spec.", level="INFO")
 
             # --- CONTEXT PATH CORRECTION ---
-            # The base path for API calls is the directory where the spec was found.
             parsed_spec_url = urlparse(spec_url)
             spec_directory = os.path.dirname(parsed_spec_url.path)
-
             base_path = spec_directory if spec_directory and spec_directory != '/' else '/'
             # --- END CONTEXT PATH CORRECTION ---
 
@@ -1256,14 +1216,12 @@ def main(urls, verbose, include_risk, include_all, product_mode, stats_flag, rat
                     for rr in rslts:
                         if rr['pii_detected']:
                             stats["hosts_with_pii"] += 1
-                            # Ensure these keys exist before updating
                             if 'pii_detection_details' in rr and rr['pii_detection_details']:
                                 for details in rr['pii_detection_details'].values():
                                     if 'detection_methods' in details:
                                         stats["pii_detection_methods"].update(details['detection_methods'])
                             if 'regex_patterns_found' in rr and rr['regex_patterns_found']:
                                 stats["regexes_found"].update(rr['regex_patterns_found'].values())
-
         else:
             if verbose:
                 log(f"No valid Swagger/OpenAPI spec found for {base_url}.", level="DEBUG")
