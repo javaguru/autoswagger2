@@ -359,7 +359,7 @@ def build_request_body(schema, content_type, value_index=0):
     if not schema:
         return None
 
-    if 'oneOf' in schema or 'anyOf' in schema or 'allOf' in prop:
+    if 'oneOf' in schema or 'anyOf' in schema or 'allOf' in schema:
         body = handle_composite_schemas(schema, value_index)
     elif schema.get('type') == 'array':
         item_schema = schema.get('items', {})
