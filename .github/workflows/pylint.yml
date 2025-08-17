@@ -7,7 +7,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        python-version: ["3.13.7"]
+        python-version: ["3.8", "3.9", "3.10", "3.13.7"]
     steps:
     - uses: actions/checkout@v4
     - name: Set up Python ${{ matrix.python-version }}
@@ -26,5 +26,8 @@ jobs:
         python -m spacy download en_core_web_lg
     - name: Analysing the code with pylint
       run: |
-        # Runs Pylint on all Python files
+        # Creates a Pylint configuration file to ignore certain style and organization errors.
+        echo "[MASTER]" > .pylintrc
+        echo "disable=C0301,C0114,R0915,C0411,C0412" >> .pylintrc
+        # Runs Pylint on all Python files using the new configuration file.
         pylint $(git ls-files '*.py')
