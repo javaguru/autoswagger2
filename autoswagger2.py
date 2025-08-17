@@ -15,7 +15,8 @@
 #      and follows the appropriate discovery path for each.
 #    - Spring Boot / springdoc-openapi Compatibility: The parser now correctly handles multi-step discovery,
 #      including the `configUrl` property and API group lists, to find the true spec URL.
-#    - Default Configuration Filtering: Actively ignores the default "petstore.swagger.io" example URL to prevent false positives.
+#    - Default Configuration Filtering: Actively ignores the default "petstore.swagger.io" example URL to prevent false positives,
+#      while still allowing the Petstore site itself to be scanned.
 #
 # 2. Enhanced Security Analysis Capabilities:
 #    - Expanded discovery paths based on Nuclei templates.
@@ -431,7 +432,7 @@ def build_array_item(item_schema, value_index=0):
     """
     Builds an array item from the given schema.
     If the schema is an object or contains properties, delegates to build_nested_object.
-    Otherwise, chooses from test values by type.
+    Otherwise chooses from test values by type.
     """
     if 'properties' in item_schema or item_schema.get('type') == 'object':
         return build_nested_object(item_schema, value_index)
@@ -1027,53 +1028,75 @@ def fetch_swagger_spec(url, verbose=False, is_recursive_call=False):
 
 def extract_spec_from_content(content, base_url, verbose=False):
     """
-    Intelligently extracts the spec from JS/HTML content, prioritizing configUrl.
+    Intelligently extracts the spec from JS/HTML content.
     """
-    # 1. Prioritize configUrl (common in springdoc)
-    config_url_match = re.search(r'["\']?configUrl["\']?\s*:\s*["\']([^"]+)["\']', content)
-    if config_url_match:
-        config_path = config_url_match.group(1)
-        full_config_url = urljoin(base_url, config_path)
-        if verbose:
-            log(f"Found configUrl: {full_config_url}", level="DEBUG")
-        try:
-            config_resp = session.get(full_config_url, timeout=TIMEOUT)
-            if config_resp.status_code == 200:
-                config_json = config_resp.json()
-                if 'urls' in config_json and config_json['urls']:
-                    spec_path = config_json['urls'][0]['url']
-                    full_spec_url = urljoin(full_config_url, spec_path)
-                    if "petstore.swagger.io" in full_spec_url:
-                        if verbose:
-                            log(f"Ignoring default Petstore URL found via configUrl: {full_spec_url}", level="DEBUG")
-                    else:
-                        if verbose:
-                            log(f"Found final spec URL via configUrl: {full_spec_url}", level="DEBUG")
-                        spec = fetch_swagger_spec(full_spec_url, verbose)
-                        if spec:
-                            return spec, full_spec_url
-        except (requests.exceptions.RequestException, json.JSONDecodeError) as e:
+    # --- Strategy 1: Look for spec URLs in variable assignments ---
+    # This is effective for modern Swagger UI pages that construct the URL dynamically.
+    spec_var_match = re.search(r'(?:const|var|let)\s+\w+(?:Url|URL)?\s*=\s*["\']([^"\']+(?:swagger|openapi)\.(?:json|yaml|yml))["\']', content)
+    if spec_var_match:
+        spec_path = spec_var_match.group(1)
+        full_spec_url = urljoin(base_url, spec_path)
+        is_petstore_example_on_another_site = "petstore.swagger.io" in full_spec_url and "petstore.swagger.io" not in urlparse(base_url).netloc
+        if not is_petstore_example_on_another_site:
             if verbose:
-                log(f"Failed to process configUrl {full_config_url}: {e}", level="DEBUG")
+                log(f"Found potential spec URL in variable: {full_spec_url}", level="DEBUG")
+            spec = fetch_swagger_spec(full_spec_url, verbose)
+            if spec:
+                return spec, full_spec_url
+        else:
+            if verbose:
+                log(f"Ignoring default Petstore URL found in variable on non-Petstore host: {full_spec_url}", level="DEBUG")
 
-    # 2. Fallback to simple 'url' if configUrl fails or is not present
-    spec_url_match = re.search(r'["\']?url["\']?\s*:\s*["\']([^"]+)["\']', content)
-    if spec_url_match:
-        spec_path = spec_url_match.group(1)
-        # Avoid matching the configUrl line again
-        if "swagger-config" not in spec_path:
-            full_spec_url = urljoin(base_url, spec_path)
-            if "petstore.swagger.io" in full_spec_url:
+    # --- Strategy 2: Look for url or configUrl inside the SwaggerUIBundle constructor ---
+    swagger_ui_config_match = re.search(r'SwaggerUI(?:Bundle)?\s*\(([\s\S]*?)\)', content)
+    if swagger_ui_config_match:
+        config_block = swagger_ui_config_match.group(1)
+
+        # Prioritize configUrl
+        config_url_match = re.search(r'["\']?configUrl["\']?\s*:\s*["\']([^"]+)["\']', config_block)
+        if config_url_match:
+            config_path = config_url_match.group(1)
+            full_config_url = urljoin(base_url, config_path)
+            if verbose:
+                log(f"Found configUrl: {full_config_url}", level="DEBUG")
+            try:
+                config_resp = session.get(full_config_url, timeout=TIMEOUT)
+                if config_resp.status_code == 200:
+                    config_json = config_resp.json()
+                    if 'urls' in config_json and config_json['urls']:
+                        spec_path = config_json['urls'][0]['url']
+                        full_spec_url = urljoin(full_config_url, spec_path)
+                        is_petstore_example_on_another_site = "petstore.swagger.io" in full_spec_url and "petstore.swagger.io" not in urlparse(base_url).netloc
+                        if not is_petstore_example_on_another_site:
+                            if verbose:
+                                log(f"Found final spec URL via configUrl: {full_spec_url}", level="DEBUG")
+                            spec = fetch_swagger_spec(full_spec_url, verbose)
+                            if spec:
+                                return spec, full_spec_url
+                        else:
+                            if verbose:
+                                log(f"Ignoring default Petstore URL found on non-Petstore host via configUrl: {full_spec_url}", level="DEBUG")
+            except (requests.exceptions.RequestException, json.JSONDecodeError) as e:
                 if verbose:
-                    log(f"Ignoring default Petstore URL found in 'url' field: {full_spec_url}", level="DEBUG")
-            else:
+                    log(f"Failed to process configUrl {full_config_url}: {e}", level="DEBUG")
+
+        # Fallback to simple 'url'
+        spec_url_match = re.search(r'["\']?url["\']?\s*:\s*["\']([^"]+)["\']', config_block)
+        if spec_url_match:
+            spec_path = spec_url_match.group(1)
+            full_spec_url = urljoin(base_url, spec_path)
+            is_petstore_example_on_another_site = "petstore.swagger.io" in full_spec_url and "petstore.swagger.io" not in urlparse(base_url).netloc
+            if not is_petstore_example_on_another_site:
                 if verbose:
                     log(f"Found fallback 'url': {full_spec_url}", level="DEBUG")
                 spec = fetch_swagger_spec(full_spec_url, verbose)
                 if spec:
                     return spec, full_spec_url
+            else:
+                 if verbose:
+                    log(f"Ignoring default Petstore URL found on non-Petstore host in 'url' field: {full_spec_url}", level="DEBUG")
 
-    # 3. Fallback to embedded spec
+    # --- Strategy 3: Fallback to embedded spec ---
     emb = extract_spec_from_js(content)
     if emb and isinstance(emb, dict):
         if verbose:
