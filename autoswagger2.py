@@ -31,6 +31,8 @@
 #
 # 3. General & Quality-of-Life Improvements:
 #    - Custom User-Agent: All outgoing HTTP requests now use a 'AutoSwagger2' User-Agent for better identification in server logs.
+#    - Authentication Support: Added flexible authentication options: a generic '--header' / '-H', and user-friendly
+#      '--api-key', '--api-key-src', '--key-header', and '--key-prefix' for common token-based auth.
 #    - Robustness & Bug Fixes:
 #        - Correctly generates JSON object request bodies when expected by the API, resolving backend errors.
 #        - Prevents false positives by skipping secret detection on binary content (e.g., images, octet-streams).
@@ -1222,7 +1224,7 @@ def process_input(urls):
         processed.append(url)
     return processed
 
-def main(urls, verbose, include_risk, include_all, product_mode, stats_flag, rate, brute, json_output):
+def main(urls, verbose, include_risk, include_all, product_mode, stats_flag, rate, brute, json_output, headers, api_key, api_key_src, key_header, key_prefix):
     """
     Main function controlling flow:
     1. Tracks start time
@@ -1233,6 +1235,41 @@ def main(urls, verbose, include_risk, include_all, product_mode, stats_flag, rat
     """
     global SCAN_START_TIME, SCAN_END_TIME, TOTAL_REQUESTS
     SCAN_START_TIME = time.time()  # Start the timer
+
+    # --- Authentication Header Logic ---
+    # Handle generic headers first
+    if headers:
+        for header in headers:
+            if ':' in header:
+                key, value = header.split(':', 1)
+                session.headers.update({key.strip(): value.strip()})
+                if verbose and not product_mode:
+                    log(f"Added custom header: {key.strip()}", level="INFO")
+            else:
+                log(f"Ignoring invalid header format: {header}", level="WARNING")
+
+    # Handle specific API key authentication
+    if api_key and api_key_src:
+        log("Error: --api-key and --api-key-src cannot be used at the same time.", level="CRITICAL")
+        sys.exit(1)
+
+    api_key_value = None
+    if api_key:
+        api_key_value = api_key
+    elif api_key_src:
+        try:
+            with open(api_key_src, 'r') as f:
+                api_key_value = f.read().strip()
+        except FileNotFoundError:
+            log(f"Error: API key file not found at {api_key_src}", level="CRITICAL")
+            sys.exit(1)
+
+    if api_key_value:
+        final_header_value = f"{key_prefix}{api_key_value}"
+        session.headers.update({key_header: final_header_value})
+        if verbose and not product_mode:
+            log(f"Added API key to header: {key_header}", level="INFO")
+    # --- End Authentication Logic ---
 
     all_results = []
     processed_urls = process_input(urls)
@@ -1555,15 +1592,31 @@ if __name__ == "__main__":
         formatter_class=argparse.RawTextHelpFormatter,
         epilog="Example usage:\n  python autoswagger2.py https://api.example.com -v "
     )
+
+    # General Options
     parser.add_argument("urls", nargs="*", help="Base URL(s) or spec URL(s) of the target API(s)")
     parser.add_argument("-v", "--verbose", action="store_true", help="Enable verbose output")
-    parser.add_argument("-risk", action="store_true", help="Include non-GET requests in testing")
-    parser.add_argument("-all", action="store_true", help="Include all HTTP status codes in the results, excluding 401 and 403")
-    parser.add_argument("-product", action="store_true", help="Output all endpoints in JSON, flagging those that contain PII or have large responses.")
-    parser.add_argument("-stats", action="store_true", help="Display scan statistics. Included in JSON if -product or -json is used.")
     parser.add_argument("-rate", type=int, default=30, help="Set the rate limit in requests per second (default: 30). Use 0 to disable rate limiting.")
-    parser.add_argument("-b", "--brute", action="store_true", help="Enable exhaustive testing of parameter values.")
-    parser.add_argument("-json", action="store_true", help="Output results in JSON format in default mode.")
+
+    # Scan Behavior Options
+    scan_group = parser.add_argument_group('Scan Behavior')
+    scan_group.add_argument("-risk", action="store_true", help="Include non-GET requests in testing")
+    scan_group.add_argument("-all", action="store_true", help="Include all HTTP status codes in the results, excluding 401 and 403")
+    scan_group.add_argument("-b", "--brute", action="store_true", help="Enable exhaustive testing of parameter values.")
+
+    # Authentication Options
+    auth_group = parser.add_argument_group('Authentication')
+    auth_group.add_argument("-H", "--header", action="append", metavar="", help="Add a custom Key:Value header to all requests (e.g., \"Authorization: Bearer ...\")")
+    auth_group.add_argument("--api-key", metavar="", help="API key/token for authentication.")
+    auth_group.add_argument("--api-key-src", metavar="", help="File containing the API key/token (useful for long tokens).")
+    auth_group.add_argument("--key-header", metavar="",  default="Authorization", help="Header name for the API key/token (default: Authorization).")
+    auth_group.add_argument("--key-prefix", metavar="", default="Bearer ", help="Prefix for the API key/token value (default: \"Bearer \"). Use \"\" for no prefix.")
+
+    # Output Options
+    output_group = parser.add_argument_group('Output')
+    output_group.add_argument("-product", action="store_true", help="Output all endpoints in JSON, flagging those that contain PII or have large responses.")
+    output_group.add_argument("-stats", action="store_true", help="Display scan statistics. Included in JSON if -product or -json is used.")
+    output_group.add_argument("-json", action="store_true", help="Output results in JSON format in default mode.")
 
     args = parser.parse_args()
 
@@ -1577,17 +1630,8 @@ if __name__ == "__main__":
         parser.print_help()
         sys.exit()
 
-    product_mode = args.product
-    verbose = args.verbose
-    include_risk = args.risk
-    include_all = args.all
-    stats_flag = args.stats
-    rate = args.rate
-    brute = args.brute
-    json_output = args.json
-
     # Set up file logging if verbose is enabled
-    if verbose:
+    if args.verbose:
         log_dir = os.path.expanduser("~/.autoswagger/logs")
         os.makedirs(log_dir, exist_ok=True)
         log_filename = datetime.now().strftime("%Y-%m-%d_%H-%M-%S-log.txt")
@@ -1598,4 +1642,4 @@ if __name__ == "__main__":
         logger.addHandler(file_handler)
         logger.propagate = False
 
-    main(urls, verbose, include_risk, include_all, product_mode, stats_flag, rate, brute, json_output)
+    main(args.urls, args.verbose, args.risk, args.all, args.product, args.stats, args.rate, args.brute, args.json, args.header, args.api_key, args.api_key_src, args.key_header, args.key_prefix)

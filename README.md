@@ -1,241 +1,300 @@
-# [AutoSwagger2](https://github.com/javaguru/autoswagger2) by **[Franck Andriano.](http://jservlet.com)**
+# AutoSwagger2 by Franck Andriano
+
 <a href="http://jservlet.com">
   <img width="966" alt="output" src="https://github.com/javaguru/autoswagger2/blob/master/image/output.png" />
 </a>
 <br>  
 <br>  
 
-Original creation by [Intruder](https://intruder.io/) 
-**[Autoswagger](https://www.intruder.io/research/broken-authorization-apis-autoswagger)**
+This tool represents a significant enhancement of the original **Autoswagger**, which was developed by Cale Anderson at [Intruder](https://intruder.io/).
 
-This script has been significantly enhanced from the original version.
-Key improvements are detailed below:
+## Overview
 
-1. Advanced Spec Discovery Engine:
-    - Context-Aware Searching: The discovery logic now prioritizes searching within the user-provided URL path
-      (e.g., /app-context/) before falling back to the server root, making it effective for non-root applications.
-    - Intelligent URL Handling: It correctly distinguishes between direct spec URLs, Swagger UI pages, and base URLs,
-      and follows the appropriate discovery path for each.
-    - Spring Boot / springdoc-openapi Compatibility: The parser now correctly handles multi-step discovery,
-      including the `configUrl` property and API group lists, to find the true spec URL.
-    - Default Configuration Filtering: Actively ignores the default "petstore.swagger.io" example URL to prevent false positives.
+AutoSwagger2 is a command-line utility designed to automate the security assessment of OpenAPI/Swagger-based APIs. The tool automates the process of discovering API specifications, enumerating defined endpoints, and systematically testing them for vulnerabilities such as Personally Identifiable Information (PII) exposure, credential leakage, and broken access control.
 
- 2. Enhanced Security Analysis Capabilities:
-    - Expanded discovery paths based on Nuclei templates.
-    - Secret Detection (TruffleHog Patterns): The list of regex patterns has been significantly expanded to detect
-      modern secrets, including JSON Web Tokens (JWT), Azure and Google Cloud credentials, and Ethereum private keys.
-    - PII (Personally Identifiable Information) Detection: Integrated the 'presidio-analyzer' library to scan
-      API responses for sensitive personal data like names, emails, phone numbers, and addresses.
-    - Creative Test Payloads: The `TEST_VALUES` dictionary has been completely revamped with a wide range of payloads
-      for SQLi, NoSQLi, Command Injection, SSTI, XSS, Path Traversal, and various fuzzing/edge cases.
-    - Refined Debug Info Detection: The pattern for detecting debug information is now more comprehensive,
-      catching common stack traces and database error messages while being classified separately from secrets.
-
- 3. General & Quality-of-Life Improvements:
-    - Custom User-Agent: All outgoing HTTP requests now use a 'AutoSwagger2' User-Agent for better identification in server logs.
-    - Robustness & Bug Fixes:
-        - Correctly generates JSON object request bodies when expected by the API, resolving backend errors.
-        - Prevents false positives by skipping secret detection on binary content (e.g., images, octet-streams).
-        - Fixed serialization errors for table and JSON output when handling binary or complex request bodies.
-    - Expanded Path Lists: Added more common paths to `SWAGGER_UI_PATHS` and `DIRECT_SPEC_PATHS` to increase the success rate of discovery.
-    - Modernized Output: The output now clearly distinguishes between high-confidence "PII/Secret" findings and lower-confidence "Debug Info" indicators.
-
-## Table of Contents
-1. [Introduction](#introduction)
-2. [Key Features](#key-features)
-3. [Installation & Usage](#installation--usage)
-4. [Discovery Phases](#discovery-phases)
-5. [Endpoint Testing](#endpoint-testing)
-6. [PII Detection](#pii-detection)
-7. [Output Examples](#output)
-8. [Stats & Reporting](#stats--reporting)
-9. [Acknowledgments](#acknowledgments)
-
----
-
-## Introduction
-
-AutoSwagger2 automates the process of finding **OpenAPI/Swagger** specifications, extracting API endpoints, and systematically testing them for **PII** exposure, **secrets**, and large or interesting responses. It leverages **Presidio** for PII recognition and **regex** for sensitive key/token detection.
-
----
+The utility leverages the **Presidio** library for advanced PII recognition and a comprehensive set of **TruffleHog-inspired regular expressions** for the detection of sensitive keys and tokens.
 
 ## Key Features
 
-- **Multiple Discovery Phases**  
-  Discovers OpenAPI specs in three ways:
-  1. **Direct Spec**: If a full URL with a path ending in `.json`, `.yaml`, or `.yml` is provided, parse that file directly.  
-  2. **Swagger UI**: Parse known paths of Swagger UI (e.g. `/swagger-ui.html`), and extract spec from HTML or JavaScript.  
-  3. **Direct Spec by Bruteforce**: Attempt discovery using common OpenAPI schema locations (`/swagger.json`, `/openapi.json`, etc.). Only attempt this if 1. and 2. did not yield a result.
+* **Advanced Specification Discovery:** Employs a multi-phase discovery process that includes direct parsing, intelligent analysis of Swagger UI pages, and context-aware path bruteforcing, ensuring compatibility with modern frameworks such as Spring Boot.
 
-- **Parallel Endpoint Testing**  
-  Multi-threaded concurrent testing of many endpoints, respecting a configurable rate limit (`-rate`).
+* **Comprehensive Security Testing:**
+    * **PII & Secret Detection:** Scans API responses for a wide range of secrets (e.g., API keys, JWTs) and Personally Identifiable Information (e.g., names, email addresses).
+    * **Dynamic Payload Generation:** Utilizes a comprehensive set of test vectors to probe for common vulnerability classes, including SQL Injection, NoSQL Injection, Cross-Site Scripting (XSS), and Command Injection.
+    * **Debug Information Analysis:** Identifies server misconfigurations by detecting stack traces, verbose error messages, and exposed environment variables.
 
-- **Brute-Force of Parameter Values**  
-  If `-b` or `--brute` is used, try using various data types with a few example values in an attempt to bypass parameter-specific validations.
+* **Support for Authenticated Scanning:** Facilitates testing of endpoints with or without authentication. Credentials can be supplied via generic custom headers or through user-friendly flags designed for common token-based authentication schemes.
 
-- **Presidio PII Detection**  
-  Check output for phone numbers, emails, addresses, and names (with context validation to reduce false positives). Also parse CSV rows and naive “key: value” lines.
+* **Structured Reporting:** Presents findings in either a formatted, human-readable table or a structured JSON format suitable for automated processing. The output clearly differentiates between high-priority secret disclosures and lower-priority debug information.
 
-- **Secrets Detection**  
-  Leverages a set of regex patterns to detect tokens, keys, and debugging artifacts (like environment variables).
-
-- **Command Line or JSON Output**  
-  In default mode, displays results in a table. With `-json`, output a JSON structure. `-product` mode filters output to only show those that contain PII, secrets, or large responses.
-
+* **Robust and Configurable Operation:** The tool is multi-threaded for performance, supports rate limiting to prevent service disruption, and provides a suite of command-line arguments to customize scan behavior and output.
 
 ---
 
 ## Installation & Usage
 
-1. **Clone** or **download** the repository containing AutoSwagger2.
-   ```bash
-   git clone git@github.com:javaguru/autoswagger2.git
-   ```
+1.  **Clone the repository:**
+    ```bash
+    git clone [https://github.com/javaguru/autoswagger2.git](https://github.com/javaguru/autoswagger2.git)
+    cd autoswagger2
+    ```
 
+2.  **Install dependencies** (Python 3.7+ is recommended):
+    ```bash
+    # Utilization of a virtual environment is considered best practice.
+    python -m venv venv
+    source venv/bin/activate
+    
+    pip install -r requirements.txt
+    ```
 
-2. **Install dependencies** (e.g., using Python 3.7+):
-   ```bash
-   pip install -r requirements.txt
-   ```
+3.  **Execute the tool:**
+    ```bash
+    # Display the help message for a full list of options.
+    python autoswagger2.py -h
+    
+    # Execute a standard scan against a target URL.
+    python autoswagger2.py [https://api.example.com](https://api.example.com)
+    ```
 
-   (It's recommended to use a virtual environment for this: `python3 -m venv venv;source venv/bin/activate`)
+---
 
-3. **Check installation, show help:**
-  ```bash
-  python3 autoswagger2.py -h
-  ```
-
-
-
-## Flags 
-
-| Flag                 | Description                                                                                                 |
-|----------------------|-------------------------------------------------------------------------------------------------------------|
-| `urls`               | List of base URLs or direct spec URLs.                                                                       |
-| `-v, --verbose`      | Enables verbose logging. Creates a log file under `~/.autoswagger/logs`.                                     |
-| `-risk`              | Includes non-GET methods (POST, PUT, PATCH, DELETE) in testing.                                              |
-| `-all`               | Includes 200 and 404 endpoints in output (excludes 401/403).                                                 |
-| `-product`           | Outputs only endpoints with PII or large responses, in JSON format.                                          |
-| `-stats`             | Displays scan statistics (e.g. requests, RPS, hosts with PII).                                               |
-| `-rate <N>`          | Throttles requests to N requests per second. Default is 30. Use 0 to disable rate limiting.                  |
-| `-b, --brute`        | Enables brute-forcing of parameter values (multiple test combos).                                            |
-| `-json`              | Outputs results in JSON format instead of a Rich table in default mode.                                      |
-
-
-## Help
+## Options
 
 ```
-    ___         __       _____                                    ___
-   /   | __  __/ /_____ / ___/      ______ _____ _____ ____  ____|__ \
-  / /| |/ / / / __/ __ \\__ \ | /| / / __ `/ __ `/ __ `/ _ \/ ___/_/ /
- / ___ / /_/ / /_/ /_/ /__/ / |/ |/ / /_/ / /_/ / /_/ /  __/ /  / __/
-/_/  |_\__,_/\__/\____/____/|__/|__/\__,_/\__, /\__, /\___/_/  /____/
-                                         /____//____/
-                              https://jservlet.com
-                          Find unauthenticated endpoints
+usage: autoswagger2.py [-h] [-v] [-rate RATE] [-risk] [-all] [-b] [-H] [--api-key] [--api-key-src] [--key-header] [--key-prefix] [-product] [-stats] [-json] [urls ...]
 
-usage: autoswagger2.py [-h] [-v] [-risk] [-all] [-product] [-stats] [-rate RATE] [-b] [-json] [urls ...]
-
-Autoswagger2: Detect unauthenticated access control issues via Swagger2/OpenAPI documentation.
+AutoSwagger2: Detect unauthenticated access control issues via Swagger2/OpenAPI documentation.
 
 positional arguments:
-  urls           Base URL(s) or spec URL(s) of the target API(s)
+  urls                  Base URL(s) or spec URL(s) of the target API(s)
 
 options:
-  -h, --help     show this help message and exit
-  -v, --verbose  Enable verbose output
-  -risk          Include non-GET requests in testing
-  -all           Include all HTTP status codes in the results, excluding 401 and 403
-  -product       Output all endpoints in JSON, flagging those that contain PII or have large responses.
-  -stats         Display scan statistics. Included in JSON if -product or -json is used.
-  -rate RATE     Set the rate limit in requests per second (default: 30). Use 0 to disable rate limiting.
-  -b, --brute    Enable exhaustive testing of parameter values.
-  -json          Output results in JSON format in default mode.
+  -h, --help            show this help message and exit
+  -v, --verbose         Enable verbose output
+  -rate RATE            Set the rate limit in requests per second (default: 30). Use 0 to disable rate limiting.
+
+Scan Behavior:
+  -risk                 Include non-GET requests in testing
+  -all                  Include all HTTP status codes in the results, excluding 401 and 403
+  -b, --brute           Enable exhaustive testing of parameter values.
+
+Authentication:
+  -H, --header          Add a custom header to all requests (e.g., "X-Custom-Header: 123")
+  --api-key             API key/token for authentication.
+  --api-key-src         File containing the API key/token (useful for long tokens).
+  --key-header          Header name for the API key/token (default: Authorization).
+  --key-prefix          Prefix for the API key/token value (default: "Bearer "). Use "" for no prefix.
+
+Output:
+  -product              Output all endpoints in JSON, flagging those that contain PII or have large responses.
+  -stats                Display scan statistics. Included in JSON if -product or -json is used.
+  -json                 Output results in JSON format in default mode.
 
 Example usage:
-  python autoswagger2.py https://api.example.com -v
+  python autoswagger2.py [https://api.example.com](https://api.example.com) -v
 
 ```
+
+---
 ## Discovery Phases
 
-1. **Direct Spec**  
-   If a provided URL ends with `.json/.yaml/.yml`, Autoswagger **directly** attempts to parse the OpenAPI schema.
+`AutoSwagger2` employs a sophisticated multi-phase process to locate the OpenAPI specification, commencing with direct methods and subsequently reverting to broader discovery techniques.
 
-2. **Swagger-UI Detection**  
-   - Tries known UI paths (e.g., `/swagger-ui.html`).
-   - If found, parses the HTML or local JavaScript files for a `swagger.json` or `openapi.json`.
-   - Can detect embedded configs like `window.swashbuckleConfig`.
+### Phase 1: Direct URL Analysis
 
-3. **Direct Spec by Bruteforce**  
-   - If no spec is found so far, Autoswagger attempts a list of default endpoints like `/swagger.json`, `/openapi.json`, etc.
-   - Stops when a valid spec is discovered or none are found.
+The initial phase involves a direct analysis of the user-provided URL:
+
+1.  **Direct Spec File:** The tool first determines if the URL directly references a specification file (i.e., ending in `.json`, `.yaml`, or `.yml`). If so, it proceeds with immediate parsing.
+2.  **Swagger UI Page:** If the URL does not point to a spec file, it is assessed as a potential Swagger UI HTML page. If confirmed, the page's content and linked JavaScript resources (e.g., `swagger-initializer.js`) are parsed to extract the definitive specification URL. This process accommodates modern configurations, including `configUrl` objects and dynamic URL variables.
+
+---
+### Phase 2: Context-Aware Discovery
+
+Should Phase 1 fail to yield a specification, the tool presumes the provided URL constitutes an application base path and initiates a targeted search from that location.
+
+1.  **Known UI Paths:** A comprehensive list of common Swagger UI paths (e.g., `/swagger-ui.html`, `/api/docs`) is tested relative to the provided URL.
+2.  **Direct Spec Paths:** Subsequently, a list of common direct specification file paths (e.g., `/v2/api-docs`, `/openapi.json`) is tested, also relative to the provided URL.
+
+---
+### Phase 3: Root Fallback Discovery
+
+If the context-aware search is unsuccessful and the initial URL was not the server root, a final fallback procedure is executed:
+
+1.  **Root Search:** The entirety of the "Context-Aware Discovery" process is repeated, commencing from the server's root (`/`). This step is crucial for identifying specifications in applications not deployed at the domain's root.
+
+The discovery process concludes upon the successful parsing of a valid OpenAPI specification.
 
 ---
 
 ## Endpoint Testing
 
-1. **Collect Endpoints**  
-   After loading a spec, Autoswagger extracts each path and method under the `paths` key.
+Upon successful parsing of a specification, the utility initiates a systematic testing protocol for each defined endpoint.
 
-2. **HTTP Methods**  
-   - By default, tests `GET` only.  
-   - Use `-risk` to include other methods (`POST`, `PUT`, `PATCH`, `DELETE`).
+1.  **Endpoint Collection**
+    Every path and method defined under the `paths` object in the specification is extracted for testing.
 
-3. **Parameter Values**  
-   - Fill path/query parameters with defaults or values to enumerate.  
-   - Optionally builds request bodies from the spec’s `requestBody` (OpenAPI 3) or body parameters (Swagger 2).
+2.  **HTTP Method Selection**
+    - By default, only `GET` requests are dispatched to ensure a safe, read-only scan.
+    - The `-risk` flag enables testing of `POST`, `PUT`, `PATCH`, and `DELETE` methods, which are capable of modifying application state.
 
-4. **Rate Limiting & Concurrency**  
-   - Supports threading with a cap on requests per second (`-rate`).  
-   - Each endpoint is tested in a dedicated job.
+3.  **Authentication**
+    - **Unauthenticated (Default):** Requests are sent without authentication credentials to identify publicly exposed endpoints.
+    - **Authenticated (Optional):** Authentication credentials may be provided via command-line arguments. These credentials will be included in all subsequent requests to assess endpoints protected by authentication.
+        - `-H` / `--header`: For any generic header (e.g., `Authorization: Bearer <token>`). This option may be specified multiple times.
+        - `--api-key`: A user-friendly shortcut for common token-based authentication schemes.
 
-5. **Response Analysis**  
-   - Decodes responses, checks for PII, secrets, and large content.  
-   - Logs relevant findings.
+4.  **Parameter & Body Generation**
+    - **Path & Query Parameters:** URL path and query string parameters are populated using a comprehensive list of test values.
+    - **Request Bodies:** For methods such as `POST` and `PUT`, valid request bodies are automatically constructed based on the API's schema, utilizing security-focused payloads from the `TEST_VALUES` dictionary.
+    - **Brute-Force Mode (`-b`):** When enabled, this option significantly increases testing depth by attempting numerous values and types for each parameter.
+
+5.  **Rate Limiting & Concurrency**
+    - Tests are executed concurrently using multiple threads to optimize performance.
+    - The `-rate` option controls the maximum number of requests per second to prevent service degradation on the target API.
+
+6.  **Response Analysis**
+    - Each response is analyzed based on its status code, content length, and content type.
+    - Text-based responses undergo scanning for PII, secrets (utilizing TruffleHog patterns), and common debug messages to identify potential information leaks.
+
+---
+
+
+## Response Analysis & Data Leakage Detection
+
+`AutoSwagger2` extends beyond simple accessibility checks by performing a multi-layered analysis on the content of every successful response to identify potential data leaks.
+
+### 1. High-Confidence Findings (PII & Secrets)
+
+The script actively searches for high-confidence indicators of sensitive data exposure:
+
+* **Personally Identifiable Information (PII):** Using the `presidio-analyzer` library, it performs context-aware scanning to pinpoint common PII such as:
+    * Names
+    * Email addresses
+    * Phone numbers
+    * Physical addresses
+
+* **Secrets and Credentials:** It uses a comprehensive list of `TruffleHog`-inspired regular expressions to detect a wide range of secrets, including:
+    * API Keys for various services (AWS, Google Cloud, Stripe, etc.)
+    * JSON Web Tokens (JWT)
+    * Private keys and credentials
+
+Any finding in this category is considered a high-priority issue and is flagged under the **PII/Secret** column in the results table.
+
+---
+### 2. Low-Confidence Indicators (Debug Info & Data Exposure)
+
+The script also looks for red flags that might not be secrets themselves but often indicate a misconfiguration or a potential information leak:
+
+* **Debug Information:** It searches for common debug keywords (`ERROR`, `stacktrace`), environment variable names (`AWS_`, `env.`), and database error messages. These findings are flagged under the **Debug Info** column.
+
+* **Large Responses:** As a heuristic, the script flags responses that are unusually large (e.g., containing over 100 JSON objects or exceeding 100k bytes). This can often indicate an endpoint that is leaking excessive data, such as returning the entire user database instead of a single record. These are marked as "interesting" in the JSON output.
 
 ---
 
-## PII Detection
-
-1. **Presidio-Based Analysis**  
-   - Searches for phone numbers, emails, addresses, names.  
-   - Context-based scanning (e.g., CSV headers, key-value lines).
-
-2. **Secrets & Debug Info**  
-   - TruffleHog-like regex checks for API keys, tokens, environment variables.  
-   - Merges any matches into the PII data structure for final reporting.
-
-3. **Large Response Check**  
-   - Flags responses with 100+ JSON elements or large XML structures as “interesting.”  
-   - Also checks raw size threshold (e.g., >100k bytes).
-
----
 
 ## Output
 
-By default, output is shown in a table.
+**AutoSwagger2** offers two main output formats: a human-readable table (default) and a machine-readable JSON format for integration with other tools.
 
-- `-json` produces JSON objects, grouping results by endpoint.
-- `-product` filters down to only “interesting” endpoints (PII, large responses and responses with secrets).
+### Default Table View
+
+By default, results are displayed in a formatted table in your terminal. This view is designed for quick manual analysis and highlights key information:
+
+* **PII/Secret:** A clear "Yes/No" indicator, highlighted in red if potential secrets or PII are found.
+* **Debug Info:** A separate "Yes/No" indicator for lower-priority findings like stack traces or error messages.
+* **Body:** When using the `-risk` flag, this column shows the request body that was sent to the server.
+
+### JSON Output
+
+For automation and integration, you can use one of the JSON output options:
+
+* **`-json`:** Outputs a detailed JSON array containing the "best" result for every tested endpoint. This is useful for custom scripting or manual review of all findings.
+* **`-product`:** Produces a filtered JSON output containing **only** the endpoints that are considered "interesting" (i.e., those with PII/Secrets, debug info, or unusually large responses). This mode is ideal for feeding results into other security tools or for CI/CD pipelines where you only want to be alerted to potential issues.
+
+### Statistics
+
+* **`-stats`:** This flag can be combined with any other output option. It will add a "Scan Statistics" block at the end of the output, providing a summary of the scan (hosts tested, requests sent, etc.).
 
 ---
 
-## Interpreting Results
 
-For most use cases, interpreting results involves looking at the output (endpoints resulting in Status Code 200s), and paying particular attention to endpoints which are marked as 'PII or Secret Detected'. These endpoints are the ones that contain impactful exposures, but they should be manually checked to confirm. You may also wish to look at other 200s that do not contain PII, and determine whether it's intended for these endpoints to be public or not.
+## Interpretation of Scan Results
 
-Simple GET endpoints can be triaged using command line tools like curl, but we would recommend using your usual API testing suite (tools such as Postman or Burp Suite) to replay requests and read responses to confirm whether an exposure is present.
+The analysis of the data generated by `AutoSwagger2` necessitates a structured and methodical approach. Although the tool is designed for the rapid identification of potential security vulnerabilities, it is imperative that all findings undergo a process of manual verification. The following guide provides a framework for the prioritization and interpretation of the scan's output.
+
+### Prioritization of Findings
+
+The resultant data is presented in a manner intended to facilitate the immediate identification of critical issues. A hierarchical approach to the triage of these results is recommended.
+
+#### Category 1: High-Confidence Indicators of Sensitive Data Exposure
+
+**Primary attention should be directed toward any entry for which the `PII/Secret` column indicates an affirmative result.**
+
+Such findings are to be considered of the highest criticality. An affirmative result signifies that the script has detected data that corresponds with a high degree of certainty to a known pattern for a secret credential (e.g., an API key, a JSON Web Token) or Personally Identifiable Information (PII).
+
+* **Recommended Action:** These endpoints warrant immediate investigation. It is advised to utilize a tool such as `curl` or an API testing suite to replicate the request. A thorough examination of the complete server response is required to confirm the precise nature and context of the exposed data.
+
+#### Category 2: Medium-Confidence Indicators of Misconfiguration
+
+**Subsequent analysis should focus on entries where the `Debug Info` column is marked affirmative, or on endpoints associated with an unusually high `Content Length`.**
+
+* **Debug Information:** The presence of application stack traces, verbose error messages, or environment variable names is indicative of a server-side misconfiguration. While not constituting a direct leakage of credentials, such information provides a significant tactical advantage to a potential adversary for the formulation of more sophisticated attacks.
+* **Large Responses:** An endpoint that returns a response of considerable size (e.g., in excess of 100 kilobytes) may be indicative of an excessive data exposure vulnerability. This condition could suggest, for instance, the return of an entire database table where only a single record was anticipated.
+* **Recommended Action:** A manual review of these endpoints is necessary to ascertain the context of the information leak. It must be determined whether the response constitutes a generic error or reveals sensitive internal architectural details.
+
+#### Category 3: Analysis of Publicly Accessible Endpoints
+
+**A final review should encompass all other endpoints that returned a `200 OK` status code.**
+
+The primary function of `AutoSwagger2` is the identification of endpoints accessible without authentication. The public availability of an endpoint may be contrary to intended security policy, even in the absence of a direct PII or secret leak.
+
+* **Recommended Action:** For each such endpoint, an evaluation must be made as to whether public access is appropriate. An endpoint such as `/api/v1/users` that enumerates all system users represents a significant vulnerability, irrespective of whether passwords are also exposed.
+
+### Manual Verification Protocol
+
+It is a mandatory step to independently confirm all automated findings. The output table provides the exact `Method` and `URL` required to replicate the request.
+
+**Example of Replication using `curl`:**
+
+Should the tool report a potential issue with the `POST /v2/pet` endpoint, replication can be readily achieved. If an authentication header was utilized during the initial scan, it must be included in any subsequent manual verification attempts.
+
+```
+# Example of a simple GET request
+curl -X GET "[https://petstore.swagger.io/v2/user/logout](https://petstore.swagger.io/v2/user/logout)"
+
+# Example of a POST request with a request body and an authentication header
+curl -X POST "[https://api.example.com/v1/admin/action](https://api.example.com/v1/admin/action)" \
+-H "Authorization: Bearer <TOKEN_VALUE>" \
+-H "Content-Type: application/json" \
+-d '{"action": "create"}'
+```
+
+For more complex analysis and manipulation of requests, the use of specialized tools such as **Burp Suite** or **Postman** is recommended.
+
 
 ---
 
-## Stats & Reporting
 
-- `-stats` appends or prints overall statistics, such as:
-  - Hosts with valid specs
-  - Hosts with PII
-  - Total requests sent, average RPS
-  - Percentage of endpoints responding with 2xx or 4xx
-  - Shown in either a Rich table in default mode or embedded in JSON if `-json` or `-product` is used.
+
+## Statistical Aggregation and Reporting
+
+The `-stats` flag enables the aggregation and presentation of key scan metrics, providing a quantitative summary of the tool's execution and findings.
+
+### Metrics Collected
+
+When enabled, the following statistics are compiled:
+
+* **Host Analysis:** The number of unique hosts provided, the number of active hosts that responded, the number of hosts for which a valid OpenAPI specification was successfully parsed, and the percentage of active hosts that yielded one or more valid endpoint responses.
+* **Findings Summary:** The total number of hosts returning at least one endpoint with high-confidence PII or secret findings.
+* **Request Metrics:** The total number of HTTP requests dispatched during the scan and the calculated average requests per second (RPS).
+
+### Output Format
+
+The presentation of these statistics is contingent upon the selected output mode:
+
+* **Default Mode:** In the default operational mode, statistics are rendered in a formatted table at the conclusion of the scan.
+* **JSON Mode:** When JSON output is selected via the `-json` or `-product` flags, these metrics are serialized and included as a `stats` object within the final JSON output.
 
 ---
 
@@ -248,4 +307,3 @@ This project is an Open Source Software released under the [BSD 3-Clause License
 ## Acknowledgments
 
 AutoSwagger2 **[Franck ANDRIANO.](http://jservlet.com)** (AutoSwagger was primarily maintained by **[Intruder](https://intruder.io/)** and primarily developed by Cale Anderson)
-
