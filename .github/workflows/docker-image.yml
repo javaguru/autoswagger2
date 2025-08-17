@@ -18,9 +18,11 @@ jobs:
         # Creates a Pylint configuration file to ignore certain style and organization errors.
         echo "[MASTER]" > .pylintrc
         echo "disable=C0301,C0114,R0915,C0411,C0412" >> .pylintrc
-        # Mounts the code and the pylint config, then runs pylint
-        docker run --rm -v $(pwd):/app -v $(pwd)/.pylintrc:/app/.pylintrc my-image-name:latest /bin/sh -c "pylint --rcfile=/app/.pylintrc $(git ls-files '*.py')"
+        # Launches the container in the background
+        docker run -d --name autoswagger-container -v $(pwd):/app -v $(pwd)/.pylintrc:/app/.pylintrc my-image-name:latest tail -f /dev/null
+        # Executes Pylint inside the running container
+        docker exec autoswagger-container /bin/sh -c "pylint --rcfile=/app/.pylintrc \$(git ls-files '*.py')"
     - name: Run Pytest in Docker
       run: |
-        # Mounts the code, then runs pytest
-        docker run --rm -v $(pwd):/app my-image-name:latest /bin/sh -c "pytest"
+        # Executes Pytest inside the running container
+        docker exec autoswagger-container /bin/sh -c "pytest"
