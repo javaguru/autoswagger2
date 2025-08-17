@@ -39,7 +39,7 @@ The utility leverages the **Presidio** library for advanced PII recognition and 
     cd autoswagger2
     ```
 
-2.  **Install dependencies** (Python 3.7+ is recommended):
+2.  **Install dependencies** (Python 3.12+ is recommended):
     ```bash
     # Utilization of a virtual environment is considered best practice.
     python -m venv venv
