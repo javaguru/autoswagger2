@@ -1,0 +1,26 @@
+name: Docker Image CI
+
+on:
+  push:
+    branches: [ "master" ]
+  pull_request:
+    branches: [ "master" ]
+
+jobs:
+  build_and_test:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - name: Build the Docker image
+      run: docker build . --file Dockerfile --tag my-image-name:latest
+    - name: Run Pylint in Docker
+      run: |
+        # Creates a Pylint configuration file to ignore certain style and organization errors.
+        echo "[MASTER]" > .pylintrc
+        echo "disable=C0301,C0114,R0915,C0411,C0412" >> .pylintrc
+        # Mounts the code and the pylint config, then runs pylint
+        docker run --rm -v $(pwd):/app -v $(pwd)/.pylintrc:/app/.pylintrc my-image-name:latest /bin/bash -c "pylint --rcfile=/app/.pylintrc \$(git ls-files '*.py')"
+    - name: Run Pytest in Docker
+      run: |
+        # Mounts the code, then runs pytest
+        docker run --rm -v $(pwd):/app my-image-name:latest /bin/bash -c "pytest"
