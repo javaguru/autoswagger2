@@ -30,15 +30,22 @@
 #      catching common stack traces and database error messages while being classified separately from secrets.
 #
 # 3. General & Quality-of-Life Improvements:
+#    - Versioning: Added a `--version` flag to display the current tool version.
 #    - Custom User-Agent: All outgoing HTTP requests now use a 'AutoSwagger2' User-Agent for better identification in server logs.
 #    - Authentication Support: Added flexible authentication options: a generic '--header' / '-H', and user-friendly
 #      '--api-key', '--api-key-src', '--key-header', and '--key-prefix' for common token-based auth.
+#    - Enhanced Verbose Logging: The verbose output (-v) now includes the request body for easier debugging.
 #    - Robustness & Bug Fixes:
 #        - Correctly generates JSON object request bodies when expected by the API, resolving backend errors.
 #        - Prevents false positives by skipping secret detection on binary content (e.g., images, octet-streams).
 #        - Fixed serialization errors for table and JSON output when handling binary or complex request bodies.
+#        - Correctly uses specified data types for path parameters (e.g., integer vs. string).
+#        - Properly formats `multipart/form-data` requests for file uploads.
+#        - Fixed brute-force mode (-b) to test all parameter combinations instead of stopping after the first success.
+#        - Fixed UnicodeEncodeError on Windows by setting log file encoding to UTF-8.
+#        - Fixed a false positive where secret detection would match long strings of repeating characters.
 #    - Expanded Path Lists: Added more common paths to `SWAGGER_UI_PATHS` and `DIRECT_SPEC_PATHS` to increase the success rate of discovery.
-#    - Modernized Output: The output now clearly distinguishes between high-confidence "PII/Secret" findings and lower-confidence "Debug Info" indicators.
+#    - Modernized Output: The output now clearly distinguishes between high-confidence "PII/Secret" findings and lower-confidence "Debug Info" indicators. URLs with findings are highlighted and truncated for readability.
 
 import argparse
 import json
@@ -66,6 +73,8 @@ from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TimeElapsedColumn
 from rich.table import Table
 import logging
+
+__version__ = "2.0.0"
 
 # ------------------------------
 # Global Variables for Stats
@@ -165,7 +174,7 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 # --- MODIFICATION: Create a global session object with a custom User-Agent ---
 # This ensures all requests made by the script identify themselves as "AutoSwagger2".
 session = requests.Session()
-session.headers.update({'User-Agent': 'AutoSwagger2'})
+session.headers.update({'User-Agent': f'AutoSwagger2/{__version__}'})
 session.verify = False # Equivalent to verify=False everywhere
 
 # Default request timeout
@@ -533,8 +542,11 @@ def detect_sensitive_info(content):
     for name, pattern in COMPILED_TRUFFLEHOG_REGEXES.items():
         matches = pattern.findall(content)
         if matches:
-            sensitive_info.setdefault(name, []).extend(matches)
-            regex_patterns[name] = pattern.pattern
+            # FIX: Filter out false positives from repeating characters (e.g., "AAAA...")
+            filtered_matches = [match for match in matches if len(set(match)) > 1]
+            if filtered_matches:
+                sensitive_info.setdefault(name, []).extend(filtered_matches)
+                regex_patterns[name] = pattern.pattern
 
     debug_info_found = DEBUG_INFO_PATTERN.findall(content)
     if debug_info_found:
@@ -576,85 +588,58 @@ def test_parameter_values(method, base_url_no_path, full_path, parameters, reque
     If brute is false, only a single default set is tested.
     If brute is true, tries enumerating multiple data types/values.
     """
-    best_response = None
+    all_responses = []
     value_mapping = {}
 
-    # Collect a default mapping from the parameter schema
+    # Collect parameter names and types
+    param_info = []
     for param in parameters:
-        if param.get('in') not in ['path', 'query']:
-            continue
-        param_name = param.get('name')
-        schema = param.get('schema', {})
-        param_type = schema.get('type', 'string')
-        enum = param.get('enum', None)
-        values = generate_parameter_values(param_type, enum)
-        value_mapping[param_name] = values[0]
+        if param.get('in') in ['path', 'query']:
+            param_name = param.get('name')
+            schema = param.get('schema', {})
+            param_type = param.get('type') or schema.get('type', 'string')
+            enum = param.get('enum', None)
+            param_info.append({'name': param_name, 'type': param_type, 'enum': enum})
 
-    # Default mode: one request
     if not brute:
+        # Default mode: one request with the first value of the correct type
+        for p_info in param_info:
+            values = generate_parameter_values(p_info['type'], p_info['enum'])
+            value_mapping[p_info['name']] = values[0]
+
         response = send_request(
             method, base_url_no_path, full_path, parameters,
             value_mapping, request_body, content_type, rate, include_all, verbose
         )
-        return [response] if response else []
-
-    # Brute mode: enumerates multiple combos or data types
+        if response:
+            all_responses.append(response)
     else:
-        tested_types = set()
-        param_types = []
-        for param in parameters:
-            if param.get('in') not in ['path', 'query']:
-                continue
-            schema = param.get('schema', {})
-            param_type = schema.get('type', None)
-            enum = param.get('enum', None)
-            if param_type:
-                values = generate_parameter_values(param_type, enum)
-            else:
-                values = []
-            param_types.append((param_type, values))
+        # Brute mode: iterate through all values for each parameter
+        param_value_lists = []
+        for p_info in param_info:
+            values = generate_parameter_values(p_info['type'], p_info['enum'])
+            param_value_lists.append(values)
 
-        # If all parameters have known values
-        if all(vals for _, vals in param_types):
-            param_test_values = [vals for _, vals in param_types]
-            combos = itertools_product(*param_test_values)
-            for combo in combos:
-                val_map = {n: v for n, v in zip(value_mapping.keys(), combo)}
-                resp = send_request(
-                    method, base_url_no_path, full_path, parameters,
-                    val_map, request_body, content_type, rate, include_all, verbose
-                )
-                if resp:
-                    return [resp]
+        if not param_value_lists: # Handle endpoints with no path/query params
+             response = send_request(
+                method, base_url_no_path, full_path, parameters,
+                {}, request_body, content_type, rate, include_all, verbose
+            )
+             if response:
+                all_responses.append(response)
         else:
-            # Try different fallback types
-            for test_type in ['integer', 'string', 'boolean', 'number']:
-                if test_type in tested_types:
-                    continue
-                tested_types.add(test_type)
-                param_test_values = [generate_parameter_values(test_type) for _ in value_mapping.keys()]
-                first_combos = itertools_product(*[vals[:1] for vals in param_test_values])
-                for combo in first_combos:
-                    val_map = {n: v for n, v in zip(value_mapping.keys(), combo)}
-                    resp = send_request(
-                        method, base_url_no_path, full_path, parameters,
-                        val_map, request_body, content_type, rate, include_all, verbose
-                    )
-                    if resp:
-                        max_clen = resp['content_length']
-                        best_response = resp
-                        second_combos = itertools_product(*param_test_values)
-                        for combo2 in second_combos:
-                            val_map2 = {n: v2 for n, v2 in zip(value_mapping.keys(), combo2)}
-                            resp2 = send_request(
-                                method, base_url_no_path, full_path, parameters,
-                                val_map2, request_body, content_type, rate, include_all, verbose
-                            )
-                            if resp2 and resp2['content_length'] > max_clen:
-                                max_clen = resp2['content_length']
-                                best_response = resp2
-                        return [best_response]
-    return []
+            # Create all combinations of parameter values
+            value_combinations = itertools_product(*param_value_lists)
+            for combo in value_combinations:
+                current_value_mapping = {p_info['name']: combo[i] for i, p_info in enumerate(param_info)}
+                response = send_request(
+                    method, base_url_no_path, full_path, parameters,
+                    current_value_mapping, request_body, content_type, rate, include_all, verbose
+                )
+                if response:
+                    all_responses.append(response)
+
+    return all_responses
 
 def send_request(method, base_url_no_path, full_path, parameters, value_mapping, request_body, content_type, rate, include_all, verbose):
     """
@@ -683,13 +668,22 @@ def send_request(method, base_url_no_path, full_path, parameters, value_mapping,
     headers = {'Content-Type': content_type} if content_type else {}
     data = request_body if method.upper() in ['POST', 'PUT', 'PATCH'] else None
 
+    # Differentiate between data and files for requests library
+    files_payload = None
+    data_payload = data
+    if content_type == 'multipart/form-data':
+        # requests library handles the Content-Type header for multipart/form-data
+        headers.pop('Content-Type', None)
+        files_payload = data
+        data_payload = None # Cannot have both data and files for multipart
+
     try:
         if rate > 0:
             time.sleep(1.0 / rate)  # Rate limiting
         TOTAL_REQUESTS += 1
 
         response = session.request(
-            method, full_url, headers=headers, data=data,
+            method, full_url, headers=headers, data=data_payload, files=files_payload,
             allow_redirects=False, timeout=TIMEOUT
         )
         status_code = response.status_code
@@ -798,14 +792,7 @@ def send_request(method, base_url_no_path, full_path, parameters, value_mapping,
             result['interesting_response'] = True
 
         if verbose:
-            if status_code == 200:
-                log(f"{method.upper()} {full_url} returned {status_code}", level="SUCCESS")
-            elif status_code == 404 and include_all:
-                log(f"{method.upper()} {full_url} returned {status_code}", level="WARNING")
-            elif 400 <= status_code < 600:
-                log(f"{method.upper()} {full_url} returned {status_code}", level="WARNING")
-            else:
-                log(f"{method.upper()} {full_url} returned {status_code}", level="INFO")
+            log(f"{method.upper()} {full_url} returned {status_code}", level="SUCCESS" if status_code == 200 else "WARNING")
 
         return result
 
@@ -1530,21 +1517,37 @@ def main(urls, verbose, include_risk, include_all, product_mode, stats_flag, rat
             else:
                 table = Table(title="API Endpoints", show_lines=False)
                 table.add_column("Method", style="cyan", no_wrap=True)
-                table.add_column("URL", style="magenta", overflow="fold")
+                table.add_column("URL", style="green", overflow="fold")
                 table.add_column("Status Code", style="green")
                 table.add_column("Content Length", style="yellow")
                 table.add_column("PII/Secret", style="red")
                 table.add_column("Debug Info", style="yellow")
                 if include_risk:
-                    table.add_column("Body", style="blue", overflow="fold")
+                    table.add_column("Body", style="bright_blue", overflow="fold")
 
                 for rr in final_results:
                     pii_status = "[bold red]Yes[/bold red]" if rr['pii_detected'] else "No"
                     debug_status = "[bold yellow]Yes[/bold yellow]" if rr.get('debug_info_detected') else "No"
+
+                    has_finding = rr['pii_detected'] or rr.get('debug_info_detected')
+
+                    method_display = f"[bright_cyan]{rr['method']}[/bright_cyan]" if has_finding else rr['method']
+                    status_code_display = f"[bright_green]{str(rr['status_code'])}[/bright_green]" if has_finding else str(rr['status_code'])
+
+                    url_to_display = rr['url']
+                    if len(url_to_display) > 100:
+                        url_to_display = url_to_display[:100] + '(...)'
+
+                    url_display = url_to_display
+                    if rr['pii_detected']:
+                        url_display = f"[bright_red]{url_to_display}[/bright_red]"
+                    elif rr.get('debug_info_detected'):
+                        url_display = f"[red]{url_to_display}[/red]"
+
                     row = [
-                        rr['method'],
-                        rr['url'],
-                        str(rr['status_code']),
+                        method_display,
+                        url_display,
+                        status_code_display,
                         f"{rr['content_length']:,}",
                         pii_status,
                         debug_status
@@ -1561,7 +1564,7 @@ def main(urls, verbose, include_risk, include_all, product_mode, stats_flag, rat
         if stats_flag and not json_output:
             stats_table = Table(title="Scan Statistics", show_lines=False)
             stats_table.add_column("Metric", style="cyan")
-            stats_table.add_column("Value", style="magenta")
+            stats_table.add_column("Value", style="bright_cyan")
 
             formatted_stats = stats.copy()
             formatted_stats["percentage_hosts_with_endpoint"] = f"{formatted_stats['percentage_hosts_with_endpoint']}%"
@@ -1595,6 +1598,7 @@ if __name__ == "__main__":
 
     # General Options
     parser.add_argument("urls", nargs="*", help="Base URL(s) or spec URL(s) of the target API(s)")
+    parser.add_argument("-V", "--version", action="version", version=f'%(prog)s {__version__}')
     parser.add_argument("-v", "--verbose", action="store_true", help="Enable verbose output")
     parser.add_argument("-rate", type=int, default=30, help="Set the rate limit in requests per second (default: 30). Use 0 to disable rate limiting.")
 
@@ -1636,7 +1640,8 @@ if __name__ == "__main__":
         os.makedirs(log_dir, exist_ok=True)
         log_filename = datetime.now().strftime("%Y-%m-%d_%H-%M-%S-log.txt")
         log_file_path = os.path.join(log_dir, log_filename)
-        file_handler = logging.FileHandler(log_file_path)
+        # FIX: Ensure log file is written with UTF-8 encoding to prevent UnicodeEncodeError
+        file_handler = logging.FileHandler(log_file_path, encoding='utf-8')
         file_handler.setLevel(logging.DEBUG)
         file_handler.setFormatter(formatter)
         logger.addHandler(file_handler)

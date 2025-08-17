@@ -62,7 +62,7 @@ The utility leverages the **Presidio** library for advanced PII recognition and 
 ## Options
 
 ```
-usage: autoswagger2.py [-h] [-v] [-rate RATE] [-risk] [-all] [-b] [-H] [--api-key] [--api-key-src] [--key-header] [--key-prefix] [-product] [-stats] [-json] [urls ...]
+usage: autoswagger2.py [-h] [-V] [-v] [-rate RATE] [-risk] [-all] [-b] [-H] [--api-key] [--api-key-src] [--key-header] [--key-prefix] [-product] [-stats] [-json] [urls ...]
 
 AutoSwagger2: Detect unauthenticated access control issues via Swagger2/OpenAPI documentation.
 
@@ -71,6 +71,7 @@ positional arguments:
 
 options:
   -h, --help            show this help message and exit
+  -V, --version         show program's version number and exit
   -v, --verbose         Enable verbose output
   -rate RATE            Set the rate limit in requests per second (default: 30). Use 0 to disable rate limiting.
 
