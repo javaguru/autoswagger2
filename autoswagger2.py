@@ -48,6 +48,7 @@
 #    - Expanded Path Lists: Added more common paths to `SWAGGER_UI_PATHS` and `DIRECT_SPEC_PATHS` to increase the success rate of discovery.
 #    - Modernized Output: The output now clearly distinguishes between high-confidence "PII/Secret" findings and
 #      lower-confidence "Debug Info" indicators. URLs with findings are highlighted and truncated for readability.
+#      PII findings now include a response preview and details in JSON output only.
 
 import argparse
 import json
@@ -754,7 +755,8 @@ def send_request(method, base_url_no_path, full_path, parameters, value_mapping,
             "pii_detection_details": None,
             "debug_info_detected": False,
             "interesting_response": False,
-            "regex_patterns_found": {}
+            "regex_patterns_found": {},
+            "response_body": content_text
         }
 
         # PII detection with Presidio (only on text content)
@@ -782,8 +784,8 @@ def send_request(method, base_url_no_path, full_path, parameters, value_mapping,
                                     if pres_res:
                                         pii_detected = True
                                         for ent in pres_res:
-                                            # (Logic to populate pii_data, same as below)
-                                            pass
+                                            pii_data.setdefault(ent.entity_type, {'values': set(), 'detection_methods': set()})['values'].add(content_text[ent.start:ent.end])
+                                            pii_data[ent.entity_type]['detection_methods'].add('presidio')
                         # Also check if a key is a context keyword
                         for key, value in data.items():
                             if any(kw in key.lower() for kw in context_keywords) and isinstance(value, str):
@@ -791,8 +793,8 @@ def send_request(method, base_url_no_path, full_path, parameters, value_mapping,
                                 if pres_res:
                                     pii_detected = True
                                     for ent in pres_res:
-                                        # (Logic to populate pii_data, same as below)
-                                        pass
+                                        pii_data.setdefault(ent.entity_type, {'values': set(), 'detection_methods': set()})['values'].add(content_text[ent.start:ent.end])
+                                        pii_data[ent.entity_type]['detection_methods'].add('presidio')
                             elif isinstance(value, (dict, list)):
                                 find_pii_in_json(value)
                     elif isinstance(data, list):
