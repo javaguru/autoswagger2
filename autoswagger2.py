@@ -399,11 +399,11 @@ def print_banner():
     Called if not in product mode, to show the standard header.
     """
     banner = fr"""[white]
-    ___         __       _____                                   [red] ___ [/red]
-   /   | __  __/ /_____ / ___/      ______ _____ _____ ____  ____[red]|__ \ [/red]
-  / /| |/ / / / __/ __ \\__ \ | /| / / __ `/ __ `/ __ `/ _ \/ ___/[red]_/ / [/red]
- / ___ / /_/ / /_/ /_/ /__/ / |/ |/ / /_/ / /_/ / /_/ /  __/ /  [red]/ __/ [/red]
-/_/  |_\__,_/\__/\____/____/|__/|__/\__,_/\__, /\__, /\___/_/  [red]/____/ [/red]
+    ___         __       _____                                   [bold bright_red] ___ [/bold bright_red]
+   /   | __  __/ /_____ / ___/      ______ _____ _____ ____  ____[bold bright_red]|__ \ [/bold bright_red]
+  / /| |/ / / / __/ __ \\__ \ | /| / / __ `/ __ `/ __ `/ _ \/ ___/[bold bright_red]_/ / [/bold bright_red]
+ / ___ / /_/ / /_/ /_/ /__/ / |/ |/ / /_/ / /_/ / /_/ /  __/ /  [bold bright_red]/ __/ [/bold bright_red]
+/_/  |_\__,_/\__/\____/____/|__/|__/\__,_/\__, /\__, /\___/_/  [bold bright_red]/____/ [/bold bright_red]
                                          /____//____/    [/white]
                               [yellow]https://jservlet.com[/yellow]
                           Find unauthenticated endpoints
