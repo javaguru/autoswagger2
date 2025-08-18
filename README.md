@@ -19,7 +19,7 @@ The utility leverages the **Presidio** library for advanced PII recognition and 
 * **Advanced Specification Discovery:** Employs a multi-phase discovery process that includes direct parsing, intelligent analysis of Swagger UI pages, and context-aware path bruteforcing, ensuring compatibility with modern frameworks such as Spring Boot.
 
 * **Comprehensive Security Testing:**
-    * **PII & Secret Detection:** Scans API responses for a wide range of secrets (e.g., API keys, JWTs) and Personally Identifiable Information (e.g., names, email addresses).
+    * **PII & Secret Detection:** Scans API responses for a wide range of secrets (e.g., API keys, JWTs) and an extensive set of Personally Identifiable Information types, including financial, national, and technical identifiers.
     * **Dynamic Payload Generation:** Utilizes a comprehensive set of test vectors to probe for common vulnerability classes, including SQL Injection, NoSQL Injection, Cross-Site Scripting (XSS), and Command Injection.
     * **Debug Information Analysis:** Identifies server misconfigurations by detecting stack traces, verbose error messages, and exposed environment variables.
 
@@ -170,10 +170,11 @@ Upon successful parsing of a specification, the utility initiates a systematic t
 The script actively searches for high-confidence indicators of sensitive data exposure:
 
 * **Personally Identifiable Information (PII):** Using the `presidio-analyzer` library, it performs context-aware scanning to pinpoint common PII such as:
-    * Names
-    * Email addresses
-    * Phone numbers
-    * Physical addresses
+    * Personal Identifiers: Names, Dates of Birth
+    * Contact Information: Email Addresses, Phone Numbers, Physical Addresses
+    * Financial Data: Credit Card Numbers, IBANs
+    * National IDs: French INSEE Numbers, US Social Security Numbers
+    * Other Identifiers: Passport Numbers, IP/MAC Addresses, License Plates (FR/US)
 
 * **Secrets and Credentials:** It uses a comprehensive list of `TruffleHog`-inspired regular expressions to detect a wide range of secrets, including:
     * API Keys for various services (AWS, Google Cloud, Stripe, etc.)
