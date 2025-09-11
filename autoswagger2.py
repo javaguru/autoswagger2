@@ -1690,17 +1690,23 @@ if __name__ == "__main__":
         parser.print_help()
         sys.exit()
 
-    # Set up file logging if verbose is enabled
-    if args.verbose:
-        log_dir = os.path.expanduser("~/.autoswagger/logs")
-        os.makedirs(log_dir, exist_ok=True)
-        log_filename = datetime.now().strftime("%Y-%m-%d_%H-%M-%S-log.txt")
-        log_file_path = os.path.join(log_dir, log_filename)
-        # FIX: Ensure log file is written with UTF-8 encoding to prevent UnicodeEncodeError
-        file_handler = logging.FileHandler(log_file_path, encoding='utf-8')
-        file_handler.setLevel(logging.DEBUG)
-        file_handler.setFormatter(formatter)
-        logger.addHandler(file_handler)
-        logger.propagate = False
+    file_handler = None  # Initialize file_handler to None
+    try:
+        # Set up file logging if verbose is enabled
+        if args.verbose:
+            log_dir = os.path.expanduser("~/.autoswagger/logs")
+            os.makedirs(log_dir, exist_ok=True)
+            log_filename = datetime.now().strftime("%Y-%m-%d_%H-%M-%S-log.txt")
+            log_file_path = os.path.join(log_dir, log_filename)
+            # FIX: Ensure log file is written with UTF-8 encoding to prevent UnicodeEncodeError
+            file_handler = logging.FileHandler(log_file_path, encoding='utf-8')
+            file_handler.setLevel(logging.DEBUG)
+            file_handler.setFormatter(formatter)
+            logger.addHandler(file_handler)
+            logger.propagate = False
 
-    main(args.urls, args.verbose, args.risk, args.all, args.product, args.stats, args.rate, args.brute, args.json, args.header, args.api_key, args.api_key_src, args.key_header, args.key_prefix)
+        main(args.urls, args.verbose, args.risk, args.all, args.product, args.stats, args.rate, args.brute, args.json, args.header, args.api_key, args.api_key_src, args.key_header, args.key_prefix)
+    finally:
+        if file_handler:
+            file_handler.close()
+            logger.removeHandler(file_handler)
