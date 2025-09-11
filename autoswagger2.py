@@ -35,10 +35,9 @@
 #    - Custom User-Agent: All outgoing HTTP requests now use a 'AutoSwagger2' User-Agent for better identification in server logs.
 #    - Authentication Support: Added flexible authentication options: a generic '--header' / '-H', and user-friendly
 #      '--api-key', '--api-key-src', '--key-header', and '--key-prefix' for common token-based auth.
-#    - Enhanced Verbose Logging: The verbose output (-v) now includes the request body for easier debugging.
 #    - Robustness & Bug Fixes:
 #        - Correctly generates JSON object request bodies when expected by the API, resolving backend errors.
-#        - Prevents false positives by skipping secret detection on binary content (e.g., images, octet-streams).
+#        - Improved binary content detection to prevent false positives on file endpoints.
 #        - Fixed serialization errors for table and JSON output when handling binary or complex request bodies.
 #        - Correctly uses specified data types for path parameters (e.g., integer vs. string).
 #        - Properly formats `multipart/form-data` requests for file uploads.
@@ -48,7 +47,7 @@
 #    - Expanded Path Lists: Added more common paths to `SWAGGER_UI_PATHS` and `DIRECT_SPEC_PATHS` to increase the success rate of discovery.
 #    - Modernized Output: The output now clearly distinguishes between high-confidence "PII/Secret" findings and
 #      lower-confidence "Debug Info" indicators. URLs with findings are highlighted and truncated for readability.
-#      PII findings now include a response preview and details in JSON output only.
+#      PII findings now include a response preview and details in both table and JSON output.
 
 import argparse
 import json
@@ -99,6 +98,7 @@ def setup_pii_recognizers():
     # Person
     person_pattern = Pattern(name="person", regex=r"\b[A-Z][a-z]+\s[A-Z][a-z]+\b", score=0.85)
     person_recognizer = PatternRecognizer(supported_entity="PERSON", patterns=[person_pattern], context=["name", "first_name", "last_name", "firstname", "lastname"])
+    #, "username", "user_name", "userid", "user_id", "login", "lastlogin"
     registry.add_recognizer(person_recognizer)
 
     # Phone Number
@@ -151,7 +151,7 @@ def setup_pii_recognizers():
     fr_plate_recognizer = PatternRecognizer(supported_entity="FR_LICENSE_PLATE", patterns=[fr_plate_pattern], context=["immatriculation", "plaque", "license_plate", "vehicle", "registration"])
     registry.add_recognizer(fr_plate_recognizer)
 
-    # --- NEW: US License Plate ---
+    # US License Plate
     us_plate_pattern = Pattern(name="us_license_plate", regex=r"\b([A-Z]{1,3}[- ]?\d{1,4}|\d{1,4}[- ]?[A-Z]{1,3})\b", score=0.6)
     us_plate_recognizer = PatternRecognizer(supported_entity="US_LICENSE_PLATE", patterns=[us_plate_pattern], context=["license", "plate", "vehicle", "registration", "vin"])
     registry.add_recognizer(us_plate_recognizer)
@@ -296,7 +296,7 @@ COMPILED_TRUFFLEHOG_REGEXES = {name: re.compile(pattern) for name, pattern in TR
 DEBUG_INFO_PATTERN = re.compile(
     r'\b(?:'
     r'env\.[A-Za-z_]+|AWS_[A-Z_]+|AZURE_[A-Z_]+|'  # Environment variables
-    r'(?i:DEBUG|ERROR|exception|stacktrace|traceback)|'  # Common debug keywords (case-insensitive)
+    r'(?i:DEBUG|ERROR|exception|unknown|stacktrace|traceback)|'  # Common debug keywords (case-insensitive)
     r'Traceback \(most recent call last\)|'  # Python stack trace
     r'SQLSTATE\[\d+]|ORA-\d+|'  # SQL error codes
     r'mysql_fetch_array\(\)|'  # PHP MySQL error
@@ -399,8 +399,8 @@ def print_banner():
     Called if not in product mode, to show the standard header.
     """
     banner = fr"""[white]
-    ___         __       _____                                   [bold bright_red] ___ [/bold bright_red]
-   /   | __  __/ /_____ / ___/      ______ _____ _____ ____  ____[bold bright_red]|__ \ [/bold bright_red]
+    ___         __      _____                                    [bold bright_red] ___ [/bold bright_red]
+   /   | __  __/ / ____/ ___/__     __ _____ _____ ____ ___  ____[bold bright_red]|__ \ [/bold bright_red]
   / /| |/ / / / __/ __ \\__ \ | /| / / __ `/ __ `/ __ `/ _ \/ ___/[bold bright_red]_/ / [/bold bright_red]
  / ___ / /_/ / /_/ /_/ /__/ / |/ |/ / /_/ / /_/ / /_/ /  __/ /  [bold bright_red]/ __/ [/bold bright_red]
 /_/  |_\__,_/\__/\____/____/|__/|__/\__,_/\__, /\__, /\___/_/  [bold bright_red]/____/ [/bold bright_red]
@@ -714,7 +714,10 @@ def send_request(method, base_url_no_path, full_path, parameters, value_mapping,
 
         content_length = len(response.content)
         content_type_header = response.headers.get('Content-Type', '').lower()
-        is_text_based = any(t in content_type_header for t in ['json', 'text', 'xml', 'html', 'javascript', 'yaml'])
+
+        # FIX: More robust check for binary content
+        is_binary = any(b in content_type_header for b in ['image', 'octet-stream', 'pdf', 'zip', 'binary', 'download'])
+        is_text_based = any(t in content_type_header for t in ['json', 'text', 'xml', 'html', 'javascript', 'yaml']) and not is_binary
 
         sensitive_info = None
         regex_patterns = {}
@@ -756,56 +759,95 @@ def send_request(method, base_url_no_path, full_path, parameters, value_mapping,
             "debug_info_detected": False,
             "interesting_response": False,
             "regex_patterns_found": {},
-            "response_body": content_text
+            "response_body": content_text,
+            "response_headers": dict(response.headers)
         }
 
         # PII detection with Presidio (only on text content)
         if content_text:
             context_keywords = [
-                "name", "fullname", "firstname", "lastname", "surname", "email", "email_address", "mail", "phone",
-                "telephone", "mobile", "tel", "phone_number", "address", "addr", "street", "city", "zipcode",
-                "postcode", "country", "location", "contact"
+                # Personal Identifiers
+                "name", "fullname", "firstname", "lastname", "first_name", "last_name", "surname", "maidenname", "alias",
+                "dob", "birthdate", "date_of_birth", "birthday", "naissance",
+                # Personal Identifiers 2
+                #"user", "username", "user_name", "userid", "user_id", "login", "lastlogin"
+
+                # Contact Information
+                "email", "email_address", "mail", "phone", "telephone", "mobile", "tel", "tel_number", "phone_number", "contact",
+
+                # Location Information
+                "address", "addr", "street", "city", "zipcode", "postcode", "country", "country_code", "location", "rue", "ville",
+                "code postal", "pays",
+
+                # Financial Information
+                "card", "creditcard", "cc", "pan", "iban", "bank", "account", "rib", "compte",
+
+                # National IDs
+                "insee", "nir", "securite_sociale", "ssn", "passport", "passeport",
+
+                # Vehicle Information
+                "license_plate", "immatriculation", "plaque", "vin",
+
+                # Technical Identifiers
+                "ip", "mac_address",
+
+                # Dev
+                "developer"
             ]
-
+            supported_entities = [
+                "PERSON","EMAIL_ADDRESS","PHONE_NUMBER","ADDRESS",
+                "CREDIT_CARD_NUMBER", "DATE_OF_BIRTH", "FR_INSEE_NUMBER",
+                "US_SSN", "PASSPORT_NUMBER", "IBAN_NUMBER", "FR_LICENSE_PLATE",
+                "IP_ADDRESS", "MAC_ADDRESS", "US_LICENSE_PLATE"
+            ]
             # --- NEW: JSON-aware PII detection ---
-            try:
-                json_data = json.loads(content_text)
+            # try:
+            #     json_data = json.loads(content_text)
+            #
+            #     def find_pii_in_json(data):
+            #         nonlocal pii_detected
+            #         if isinstance(data, dict):
+            #             # Check if any value is a context keyword, value len < 25 and lower
+            #             has_context = any(isinstance(v, str) and len(v) < 25 and v.lower() in context_keywords for v in data.values())
+            #             if has_context:
+            #                 # If so, analyze all other values in the same object
+            #                 for key, value in data.items():
+            #                     if isinstance(value, str):
+            #                         pres_res = analyzer.analyze(text=value, entities=supported_entities, language='en')
+            #                         if pres_res:
+            #                             pii_detected = True
+            #                             for ent in pres_res:
+            #                                 pii_data.setdefault(ent.entity_type, {'values': set(), 'detection_methods': set()})['values'].add(content_text[ent.start:ent.end])
+            #                                 pii_data[ent.entity_type]['detection_methods'].add('presidio')
+            #             # Also check if a key is a context keyword
+            #             for key, value in data.items():
+            #                 if any(kw in key.lower() for kw in context_keywords) and isinstance(value, str):
+            #                     pres_res = analyzer.analyze(text=value, entities=supported_entities, language='en')
+            #                     if pres_res:
+            #                         pii_detected = True
+            #                         for ent in pres_res:
+            #                             pii_data.setdefault(ent.entity_type, {'values': set(), 'detection_methods': set()})['values'].add(content_text[ent.start:ent.end])
+            #                             pii_data[ent.entity_type]['detection_methods'].add('presidio')
+            #                 elif isinstance(value, (dict, list)):
+            #                         find_pii_in_json(value)
+            #         elif isinstance(data, list):
+            #             for item in data:
+            #                 find_pii_in_json(item)
+            #
+            #     find_pii_in_json(json_data)
+            # except json.JSONDecodeError:
+            #     # Fallback to line-based analysis if not valid JSON
+            #     lines = content_text.splitlines()
+            #     # ... (existing line-based and CSV logic) ...
 
-                def find_pii_in_json(data):
-                    nonlocal pii_detected
-                    if isinstance(data, dict):
-                        # Check if any value is a context keyword
-                        has_context = any(isinstance(v, str) and v in context_keywords for v in data.values())
-                        if has_context:
-                            # If so, analyze all other values in the same object
-                            for key, value in data.items():
-                                if isinstance(value, str):
-                                    pres_res = analyzer.analyze(text=value, entities=["PERSON","EMAIL_ADDRESS","PHONE_NUMBER","ADDRESS", "CREDIT_CARD_NUMBER", "DATE_OF_BIRTH", "FR_INSEE_NUMBER", "US_SSN", "PASSPORT_NUMBER", "IBAN_NUMBER", "FR_LICENSE_PLATE", "IP_ADDRESS", "MAC_ADDRESS"], language='en')
-                                    if pres_res:
-                                        pii_detected = True
-                                        for ent in pres_res:
-                                            pii_data.setdefault(ent.entity_type, {'values': set(), 'detection_methods': set()})['values'].add(content_text[ent.start:ent.end])
-                                            pii_data[ent.entity_type]['detection_methods'].add('presidio')
-                        # Also check if a key is a context keyword
-                        for key, value in data.items():
-                            if any(kw in key.lower() for kw in context_keywords) and isinstance(value, str):
-                                pres_res = analyzer.analyze(text=value, entities=["PERSON","EMAIL_ADDRESS","PHONE_NUMBER","ADDRESS", "CREDIT_CARD_NUMBER", "DATE_OF_BIRTH", "FR_INSEE_NUMBER", "US_SSN", "PASSPORT_NUMBER", "IBAN_NUMBER", "FR_LICENSE_PLATE", "IP_ADDRESS", "MAC_ADDRESS"], language='en')
-                                if pres_res:
-                                    pii_detected = True
-                                    for ent in pres_res:
-                                        pii_data.setdefault(ent.entity_type, {'values': set(), 'detection_methods': set()})['values'].add(content_text[ent.start:ent.end])
-                                        pii_data[ent.entity_type]['detection_methods'].add('presidio')
-                            elif isinstance(value, (dict, list)):
-                                find_pii_in_json(value)
-                    elif isinstance(data, list):
-                        for item in data:
-                            find_pii_in_json(item)
-
-                find_pii_in_json(json_data)
-            except json.JSONDecodeError:
-                # Fallback to line-based analysis if not valid JSON
-                lines = content_text.splitlines()
-                # ... (existing line-based and CSV logic) ...
+            # Analyze the full text for any PII type, regardless of format (Txt, Json, CSV, XML or SVG...)
+            if isinstance(content_text, str):
+                pres_res = analyzer.analyze(text=content_text, entities=supported_entities, language='en')
+                if pres_res:
+                    pii_detected = True
+                    for ent in pres_res:
+                        pii_data.setdefault(ent.entity_type, {'values': set(), 'detection_methods': set()})['values'].add(content_text[ent.start:ent.end])
+                        pii_data[ent.entity_type]['detection_methods'].add('presidio')
 
         # Process regex-based findings for secrets and debug info
         if sensitive_info:
@@ -832,20 +874,10 @@ def send_request(method, base_url_no_path, full_path, parameters, value_mapping,
         result['pii_detected'] = pii_detected
         if pii_data:
             result["pii_data"] = {k: list(vv['values'])[:2] for k, vv in pii_data.items()}
-            detection_details = {}
-            for k, vv in pii_data.items():
-                detection_details[k] = {"detection_methods": list(vv['detection_methods'])}
-            result["pii_detection_details"] = detection_details
+            result["pii_detection_details"] = {k: {"detection_methods": list(v['detection_methods'])} for k, v in pii_data.items()}
 
         # Finalize interesting_response flag
-        is_interesting = (
-            result['pii_detected'] or
-            result['debug_info_detected'] or
-            is_large_response(response.content) or
-            content_length > 100000
-        )
-        if is_interesting and (status_code == 200 or (include_all and status_code == 404)):
-            result['interesting_response'] = True
+        result['interesting_response'] = (result['pii_detected'] or result['debug_info_detected'] or is_large_response(content_text))
 
         if verbose:
             log(f"{method.upper()} {full_url} returned {status_code}", level="SUCCESS" if status_code == 200 else "WARNING")
@@ -1576,44 +1608,73 @@ def main(urls, verbose, include_risk, include_all, product_mode, stats_flag, rat
                 table.add_column("URL", style="green", overflow="fold")
                 table.add_column("Status Code", style="green")
                 table.add_column("Content Length", style="yellow")
-                table.add_column("PII/Secret", style="red")
+                table.add_column("PII/Secret Detected", style="red")
                 table.add_column("Debug Info", style="yellow")
                 if include_risk:
                     table.add_column("Body", style="bright_blue", overflow="fold")
 
-                for rr in final_results:
-                    pii_status = "[bold red]Yes[/bold red]" if rr['pii_detected'] else "No"
-                    debug_status = "[bold yellow]Yes[/bold yellow]" if rr.get('debug_info_detected') else "No"
+                    has_details_column = any(r.get('pii_detected') or (r.get('status_code') >= 400 and r.get('debug_info_detected')) for r in final_results)
+                    if has_details_column:
+                        table.add_column("Response / PII Details", style="green", overflow="fold")
 
-                    has_finding = rr['pii_detected'] or rr.get('debug_info_detected')
+                    for rr in final_results:
+                        pii_status = "[bold red]Yes[/bold red]" if rr['pii_detected'] else "No"
+                        debug_status = "[bold yellow]Yes[/bold yellow]" if rr.get('debug_info_detected') else "No"
 
-                    method_display = f"[bright_cyan]{rr['method']}[/bright_cyan]" if has_finding else rr['method']
-                    status_code_display = f"[bright_green]{str(rr['status_code'])}[/bright_green]" if has_finding else str(rr['status_code'])
+                        has_finding = rr['pii_detected'] or rr.get('debug_info_detected')
 
-                    url_to_display = rr['url']
-                    if len(url_to_display) > 100:
-                        url_to_display = url_to_display[:100] + '(...)'
+                        method_display = f"[bright_cyan]{rr['method']}[/bright_cyan]" if has_finding else rr['method']
+                        status_code_display = f"[bright_green]{str(rr['status_code'])}[/bright_green]" if has_finding else str(rr['status_code'])
 
-                    url_display = url_to_display
-                    if rr['pii_detected']:
-                        url_display = f"[bright_red]{url_to_display}[/bright_red]"
-                    elif rr.get('debug_info_detected'):
-                        url_display = f"[red]{url_to_display}[/red]"
+                        url_to_display = rr['url']
+                        if len(url_to_display) > 100:
+                            url_to_display = url_to_display[:100] + '(...)'
 
-                    row = [
-                        method_display,
-                        url_display,
-                        status_code_display,
-                        f"{rr['content_length']:,}",
-                        pii_status,
-                        debug_status
-                    ]
-                    if include_risk:
-                        body_content = rr['body'] if rr['body'] else ""
-                        row.append(body_content)
-                    table.add_row(*row)
+                        url_display = url_to_display
+                        if rr['pii_detected']:
+                            url_display = f"[bright_red]{url_to_display}[/bright_red]"
+                        elif rr.get('debug_info_detected'):
+                            url_display = f"[red]{url_to_display}[/red]"
 
-                console.print(table)
+                        row = [
+                            method_display,
+                            url_display,
+                            status_code_display,
+                            f"{rr['content_length']:,}",
+                            pii_status,
+                            debug_status
+                        ]
+                        if include_risk:
+                            body_content = rr['body'] if rr['body'] else ""
+                            row.append(body_content)
+
+                        if has_details_column:
+                            details_content = ""
+                            if rr.get('pii_detected') and rr.get('pii_data'):
+                                pii_types = ', '.join(rr['pii_data'].keys())
+                                preview = rr.get('response_body', '')
+                                truncated_preview = (preview[:200] + '...') if len(preview) > 200 else preview
+
+                                headers = rr.get('response_headers', {})
+                                interesting_headers_keys = ['x-powered-by', 'set-cookie', 'cf-ray', 'x-request-id', 'x-correlation-id', 'via', 'x-forwarded-for']
+                                interesting_headers = {k: v for k, v in headers.items() if k.lower() in interesting_headers_keys}
+                                headers_str = '\n'.join([f"  {k}: {v}" for k, v in interesting_headers.items()])
+
+                                details_content = f"[bold]Type(s):[/bold] {pii_types}\n"
+                                if headers_str:
+                                    details_content += f"[bold]Headers:[/bold]\n{headers_str}\n"
+                                details_content += f"[bold]Preview:[/bold]\n{truncated_preview}"
+
+                            elif rr.get('status_code') >= 400 and rr.get('debug_info_detected') or debug_status:
+                                preview = rr.get('response_body', '')
+                                truncated_preview = (preview[:200] + '...') if len(preview) > 200 else preview
+                                details_content = f"[yellow]{truncated_preview}[/yellow]"
+
+                            row.append(details_content)
+
+                        table.add_row(*row)
+
+                    console.print(table)
         else:
             log("No valid API responses found.", level="INFO")
 
@@ -1690,17 +1751,23 @@ if __name__ == "__main__":
         parser.print_help()
         sys.exit()
 
-    # Set up file logging if verbose is enabled
-    if args.verbose:
-        log_dir = os.path.expanduser("~/.autoswagger/logs")
-        os.makedirs(log_dir, exist_ok=True)
-        log_filename = datetime.now().strftime("%Y-%m-%d_%H-%M-%S-log.txt")
-        log_file_path = os.path.join(log_dir, log_filename)
-        # FIX: Ensure log file is written with UTF-8 encoding to prevent UnicodeEncodeError
-        file_handler = logging.FileHandler(log_file_path, encoding='utf-8')
-        file_handler.setLevel(logging.DEBUG)
-        file_handler.setFormatter(formatter)
-        logger.addHandler(file_handler)
-        logger.propagate = False
+    file_handler = None  # Initialize file_handler to None
+    try:
+        # Set up file logging if verbose is enabled
+        if args.verbose:
+            log_dir = os.path.expanduser("~/.autoswagger/logs")
+            os.makedirs(log_dir, exist_ok=True)
+            log_filename = datetime.now().strftime("%Y-%m-%d_%H-%M-%S-log.txt")
+            log_file_path = os.path.join(log_dir, log_filename)
+            # FIX: Ensure log file is written with UTF-8 encoding to prevent UnicodeEncodeError
+            file_handler = logging.FileHandler(log_file_path, encoding='utf-8')
+            file_handler.setLevel(logging.DEBUG)
+            file_handler.setFormatter(formatter)
+            logger.addHandler(file_handler)
+            logger.propagate = False
 
-    main(args.urls, args.verbose, args.risk, args.all, args.product, args.stats, args.rate, args.brute, args.json, args.header, args.api_key, args.api_key_src, args.key_header, args.key_prefix)
+        main(args.urls, args.verbose, args.risk, args.all, args.product, args.stats, args.rate, args.brute, args.json, args.header, args.api_key, args.api_key_src, args.key_header, args.key_prefix)
+    finally:
+        if file_handler:
+            file_handler.close()
+            logger.removeHandler(file_handler)
