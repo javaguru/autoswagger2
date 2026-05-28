@@ -12,7 +12,7 @@ class SpecCache:
         return hashlib.md5(url.encode('utf-8')).hexdigest()
 
     def get_cached_spec(self, url):
-        """Évite les re-requêtes inutiles en lisant le cache."""
+        """Avoids redundant requests by reading from cache."""
         cache_path = os.path.join(self.cache_dir, f"{self._get_hash(url)}.json")
         if os.path.exists(cache_path):
             try:
@@ -23,8 +23,8 @@ class SpecCache:
         return None
         
     def cache_spec(self, url, spec):
-        """Stocke les specs découvertes dans le cache."""
-        # On ne met en cache que les dictionnaires (specs valides)
+        """Stores discovered specs in the cache."""
+        # Only cache dictionaries (valid specs)
         if not isinstance(spec, dict):
             return
             

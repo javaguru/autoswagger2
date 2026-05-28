@@ -3,7 +3,7 @@
 
 class ResultValidator:
     def __init__(self):
-        # Liste de faux positifs courants dans les environnements de test / mock
+        # List of common false positives in test / mock environments
         self.false_positives = [
             "example.com", "test@test.com", "dummy", "placeholder", "string",
             "123456789", "000000000", "111111111", "999999999",
@@ -12,8 +12,8 @@ class ResultValidator:
 
     def validate_finding(self, pii_data):
         """
-        Normalise et valide les résultats pour éviter faux positifs,
-        éliminer les duplicatas et enrichir les métadonnées.
+        Normalizes and validates results to avoid false positives,
+        eliminate duplicates, and enrich metadata.
         """
         if not pii_data:
             return None, None
@@ -29,20 +29,20 @@ class ResultValidator:
             for val in raw_values:
                 val_str = str(val).strip()
                 
-                # Vérifie les faux positifs
+                # Checks for false positives
                 is_fp = any(fp in val_str.lower() for fp in self.false_positives)
                 
-                # Élimine les chaînes trop courtes ou les faux positifs
+                # Eliminates strings that are too short or false positives
                 if not is_fp and len(val_str) >= 3:
-                    # Élimine les duplicatas (tout en gardant l'ordre d'apparition)
+                    # Eliminates duplicates (while preserving appearance order)
                     if val_str not in valid_values:
                         valid_values.append(val_str)
 
             if valid_values:
-                # On limite à 3 exemples pour ne pas surcharger les rapports
+                # Limit to 3 examples to avoid cluttering reports
                 normalized_data[finding_type] = valid_values[:3]
                 
-                # Enrichit les métadonnées
+                # Enriches the metadata
                 is_critical = 'regex' in methods
                 detection_details[finding_type] = {
                     "detection_methods": list(methods),

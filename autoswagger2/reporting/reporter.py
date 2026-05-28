@@ -136,7 +136,7 @@ class Reporter:
                     if rr.get('pii_detected') and rr.get('pii_data'):
                         pii_types = ', '.join(rr['pii_data'].keys())
                         
-                        # Extraire les valeurs matchées pour plus de clarté
+                        # Extract matched values for clarity
                         matched_values = []
                         for vals in rr['pii_data'].values():
                             matched_values.extend(vals)

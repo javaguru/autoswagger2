@@ -87,7 +87,7 @@ def detect_sensitive_info(content):
                     for m in filtered_matches:
                         parts = m.split('.')
                         if len(parts) >= 3:
-                            # Masquer la signature du JWT
+                            # Mask the JWT signature
                             masked_matches.append(f"{parts[0]}.{parts[1]}.[REDACTED]")
                         else:
                             masked_matches.append(m)

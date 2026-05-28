@@ -39,10 +39,10 @@ class OpenAPIParser:
         """Extract all testable endpoints including webhooks"""
         endpoints = []
 
-        # Endpoints normaux (tous les versions)
+        # Normal endpoints (all versions)
         endpoints.extend(self._extract_paths())
 
-        # Webhooks (seulement OpenAPI 3.1)
+        # Webhooks (only OpenAPI 3.1)
         if self.version == OpenAPIVersion.OPENAPI_3_1:
             endpoints.extend(self._extract_webhooks())
 
