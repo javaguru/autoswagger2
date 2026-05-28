@@ -1,7 +1,7 @@
 # autoswagger2/utils/config.py
 # Contains all global constants and configurations.
 
-__version__ = "2.0.3"
+__version__ = "2.0.2"
 
 # --- IMPROVEMENT: Expanded discovery paths based on Nuclei templates ---
 SWAGGER_UI_PATHS = sorted({
