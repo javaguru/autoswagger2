@@ -32,6 +32,14 @@ def run():
     parser.add_argument("-v", "--verbose", action="store_true", help="Enable verbose output")
     parser.add_argument("-rate", type=int, default=30, help="Set the rate limit in requests per second (default: 30). Use 0 to disable rate limiting.")
 
+    # NEW: OpenAPI Version Option
+    parser.add_argument(
+        "--openapi-version",
+        type=str,
+        default=None,
+        help="Force OpenAPI version detection (e.g. 2.0, 3.0.1, 3.0.4, 3.1). If not specified, auto-detect."
+    )
+
     # Scan Behavior Options
     scan_group = parser.add_argument_group('Scan Behavior')
     scan_group.add_argument("-risk", action="store_true", help="Include non-GET requests in testing")
@@ -49,6 +57,7 @@ def run():
     auth_group.add_argument("--api-key-src", metavar="", help="File containing the API key/token (useful for long tokens).")
     auth_group.add_argument("--key-header", metavar="",  default="Authorization", help="Header name for the API key/token (default: Authorization).")
     auth_group.add_argument("--key-prefix", metavar="", default="Bearer ", help="Prefix for the API key/token value (default: \"Bearer \"). Use \"\" for no prefix.")
+    auth_group.add_argument("--user-agent", metavar="UA", help="Specify a custom User-Agent header for all requests.")
 
     # BOLA Testing Options
     bola_group = parser.add_argument_group('BOLA Testing')
@@ -60,6 +69,11 @@ def run():
     output_group.add_argument("-product", action="store_true", help="Output all endpoints in JSON, flagging those that contain PII or have large responses.")
     output_group.add_argument("-stats", action="store_true", help="Display scan statistics. Included in JSON if -product or -json is used.")
     output_group.add_argument("-json", action="store_true", help="Output results in JSON format in default mode.")
+    output_group.add_argument("-csv", action="store_true", help="Output results in CSV format.")
+    output_group.add_argument("-sarif", action="store_true", help="Output results in SARIF format.")
+    output_group.add_argument("-html", action="store_true", help="Output results in HTML format.")
+    output_group.add_argument("--out", metavar="FILE", help="Save output to file (used with -csv, -sarif, -html).")
+    output_group.add_argument("-severity", choices=["critical", "high", "medium", "low"], help="Filter results by minimum severity level (critical, high, medium, low).")
 
     args = parser.parse_args()
 
@@ -89,8 +103,33 @@ def run():
         logger.propagate = False
 
     # Configure the global session object
-    session.headers.update({'User-Agent': f'AutoSwagger2/{__version__}'})
+    user_agent = args.user_agent if args.user_agent else f'AutoSwagger2/{__version__}'
+    session.headers.update({'User-Agent': user_agent})
     session.verify = False
+
+    # Apply custom headers from -H / --header
+    if args.header:
+        for h in args.header:
+            if ':' in h:
+                name, val = h.split(':', 1)
+                session.headers[name.strip()] = val.strip()
+
+    # Apply API Key authentication
+    api_key_val = None
+    if args.api_key:
+        api_key_val = args.api_key
+    elif args.api_key_src and os.path.exists(args.api_key_src):
+        try:
+            with open(args.api_key_src, 'r', encoding='utf-8') as f:
+                api_key_val = f.read().strip()
+        except Exception as e:
+            if args.verbose:
+                print(f"Error reading API key file {args.api_key_src}: {e}")
+
+    if api_key_val:
+        header_name = args.key_header or "Authorization"
+        prefix = args.key_prefix if args.key_prefix is not None else "Bearer "
+        session.headers[header_name] = f"{prefix}{api_key_val}"
 
     # Pass the configured session to the Scanner
     scanner = Scanner(urls, args, session)

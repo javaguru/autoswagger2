@@ -7,7 +7,8 @@ import json
 import re
 from urllib.parse import urljoin, urlparse
 from ..utils.helpers import log
-from ..utils.config import SWAGGER_UI_PATHS, DIRECT_SPEC_PATHS, __version__
+from ..utils.config import SWAGGER_UI_PATHS, DIRECT_SPEC_PATHS
+from ..utils.cache import SpecCache
 
 class SpecFinder:
     def __init__(self, base_url, args, session):
@@ -15,6 +16,7 @@ class SpecFinder:
         self.args = args
         self.session = session
         self.TIMEOUT = 10
+        self.cache = SpecCache()
 
     def find(self):
         """
@@ -82,6 +84,12 @@ class SpecFinder:
         return None, None
 
     def _fetch_swagger_spec(self, url, is_recursive_call=False):
+        cached_spec = self.cache.get_cached_spec(url)
+        if cached_spec:
+            if self.args.verbose:
+                log(f"Loaded spec from cache for {url}", level="DEBUG")
+            return cached_spec
+
         if self.args.verbose:
             log(f"Fetching Swagger/OpenAPI spec from {url}", level="DEBUG")
         try:
@@ -109,6 +117,7 @@ class SpecFinder:
                 if isinstance(spec, dict) and ('openapi' in spec or 'swagger' in spec or 'paths' in spec):
                     if self.args.verbose:
                         log(f"Successfully loaded spec from {url}.", level="SUCCESS")
+                    self.cache.cache_spec(url, spec)
                     return spec
                 elif isinstance(spec, list) and not is_recursive_call and spec and isinstance(spec[0], dict) and 'url' in spec[0]:
                     if self.args.verbose:

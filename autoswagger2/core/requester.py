@@ -6,7 +6,7 @@ import json
 import time
 import re
 from itertools import product as itertools_product
-from urllib.parse import urljoin, urlencode, urlparse
+from urllib.parse import urljoin, urlencode
 from dicttoxml import dicttoxml
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import os
@@ -15,6 +15,10 @@ from ..utils.config import TEST_VALUES
 from ..analysis.secrets import detect_sensitive_info
 from ..analysis.pii import PiiAnalyzer
 from ..utils.helpers import log
+from ..utils.validators import ResultValidator
+from ..analysis.parameter_analysis import ParameterAnalyzer
+
+from ..discovery.openapi_parser import OpenAPIParser
 
 class Requester:
     def __init__(self, api_base_url, args, session):
@@ -22,6 +26,8 @@ class Requester:
         self.args = args
         self.session = session
         self.pii_analyzer = PiiAnalyzer()
+        self.validator = ResultValidator()
+        self.param_analyzer = ParameterAnalyzer()
         self.TIMEOUT = 10
         self.TOTAL_REQUESTS = 0
 
@@ -29,28 +35,54 @@ class Requester:
         all_results = []
         max_workers = min(100, os.cpu_count() * 5)
 
+        parser = OpenAPIParser(swagger_spec, getattr(self.args, 'openapi_version', None))
+        openapi_version = parser.version
+
+        if not self.args.product:
+            log(f"Detected OpenAPI version: {parser.raw_version}", level="INFO")
+
+        endpoints = parser.extract_all_endpoints()
+        webhooks_count = sum(1 for ep in endpoints if ep.get('type') == 'webhook')
+        if webhooks_count > 0 and not self.args.product:
+            log(f"Found {webhooks_count} webhooks to test", level="INFO")
+
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             future_to_endpoint = {}
-            for path, methods in swagger_spec.get('paths', {}).items():
-                for mthd, details in methods.items():
-                    if mthd.lower() not in ['get','post','put','patch','delete']:
-                        continue
-                    if mthd.upper() != 'GET' and not self.args.risk:
-                        continue
 
-                    parameters = details.get('parameters', [])
+            for ep in endpoints:
+                path = ep['path']
+                mthd = ep['method']
+                operation = ep['operation']
+                ep_type = ep.get('type', 'endpoint')
 
-                    if 'requestBody' in details:
-                        rb_content = details['requestBody'].get('content', {})
-                        for ct, content_details in rb_content.items():
-                            schema = content_details.get('schema', {})
-                            request_body = self._build_request_body(schema, ct)
+                if mthd.upper() != 'GET' and not self.args.risk:
+                    continue
+
+                parameters = operation.get('parameters', [])
+
+                if 'requestBody' in operation:
+                    rb_content = operation['requestBody'].get('content', {})
+                    for ct, content_details in rb_content.items():
+                        schema = content_details.get('schema', {})
+                        request_body = self._build_request_body(schema, ct)
+
+                        if ep_type == 'webhook':
+                            webhook_name = ep.get('webhook_name', 'unknown')
+                            fut = executor.submit(self._test_webhook, path, mthd, parameters, base_path, request_body, ct, webhook_name)
+                            future_to_endpoint[fut] = (mthd, f"[WEBHOOK] {path}", ct)
+                        else:
                             fut = executor.submit(self._test_endpoint, path, mthd, parameters, base_path, request_body, ct)
                             future_to_endpoint[fut] = (mthd, path, ct)
+                else:
+                    if ep_type == 'webhook':
+                        webhook_name = ep.get('webhook_name', 'unknown')
+                        fut = executor.submit(self._test_webhook, path, mthd, parameters, base_path, None, None, webhook_name)
+                        future_to_endpoint[fut] = (mthd, f"[WEBHOOK] {path}", None)
                     else:
                         fut = executor.submit(self._test_endpoint, path, mthd, parameters, base_path, None, None)
                         future_to_endpoint[fut] = (mthd, path, None)
 
+            #  Collect results
             for future in as_completed(future_to_endpoint):
                 try:
                     endpoint_results = future.result()
@@ -61,6 +93,28 @@ class Requester:
                         log(f"Endpoint generated an exception: {exc}", level="DEBUG")
 
         return all_results
+
+    def _test_webhook(self, expression, method, parameters, base_path, request_body=None, content_type=None, webhook_name=None):
+        """Test webhook endpoint (OpenAPI 3.1)"""
+        # Webhooks use Runtime Expressions in OpenAPI 3.1
+        # Skip unresolved variables like {$request.body#/callbackUrl}
+        if expression.startswith('{$'):
+            if self.args.verbose:
+                log(f"Skipping webhook '{webhook_name}' - unresolved runtime expression: {expression}", level="WARNING")
+            return []
+
+        # If it's a full URL, use it directly. Otherwise, assume it's relative to base_path.
+        if expression.startswith('http://') or expression.startswith('https://'):
+            full_path = expression
+            base_url_no_path = "" # full_path already has the domain
+        else:
+            full_path = base_path + expression
+            base_url_no_path = self.api_base_url
+
+        if not self.args.product:
+            log(f"Testing webhook '{webhook_name}': {method.upper()} {expression}", level="INFO")
+
+        return self._test_parameter_values(method, base_url_no_path, full_path, parameters, request_body, content_type)
 
     def _test_endpoint(self, path_template, method, parameters, base_path, request_body=None, content_type=None):
         full_path = base_path + path_template
@@ -106,6 +160,7 @@ class Requester:
 
     def _send_request(self, method, base_url_no_path, full_path, parameters, value_mapping, request_body, content_type):
         self.TOTAL_REQUESTS += 1
+        sensitive_params = self.param_analyzer.analyze_parameters(parameters)
 
         substituted_path = self._substitute_path_parameters(full_path, parameters, value_mapping)
         query_string = self._generate_query_string(parameters, value_mapping)
@@ -127,61 +182,82 @@ class Requester:
             files_payload = data
             data_payload = None
 
-        try:
-            if self.args.rate > 0:
-                time.sleep(1.0 / self.args.rate)
+        max_retries = 3
+        response = None
+        for attempt in range(max_retries):
+            try:
+                if self.args.rate > 0:
+                    time.sleep(1.0 / self.args.rate)
 
-            response = self.session.request(
-                method, full_url, headers=headers, data=data_payload, files=files_payload,
-                allow_redirects=False, timeout=self.TIMEOUT
-            )
-            status_code = response.status_code
+                response = self.session.request(
+                    method, full_url, headers=headers, data=data_payload, files=files_payload,
+                    allow_redirects=False, timeout=self.TIMEOUT
+                )
+                break  # Success, exit retry loop
 
-            if status_code in [401, 403] and not self.args.all:
+            except requests.Timeout:
+                if attempt < max_retries - 1:
+                    wait_time = 2 ** attempt
+                    if self.args.verbose:
+                        log(f"Timeout on {method.upper()} {full_url}, retry in {wait_time}s", level="WARNING")
+                    time.sleep(wait_time)
+                else:
+                    if self.args.verbose:
+                        log(f"Max retries reached for {method.upper()} {full_url} due to timeout.", level="DEBUG")
+                    return None
+            except requests.ConnectionError as e:
                 if self.args.verbose:
-                    log(f"Skipping endpoint {method.upper()} {full_url} due to status code {status_code}", level="INFO")
+                    log(f"Connection error on {method.upper()} {full_url}: {e}", level="DEBUG")
+                return None
+            except requests.exceptions.RequestException as e:
+                if self.args.verbose:
+                    log(f"Error testing {method.upper()} {full_url}: {e}", level="DEBUG")
                 return None
 
-            content_type_header = response.headers.get('Content-Type', '').lower()
-            is_binary = any(b in content_type_header for b in ['image', 'octet-stream', 'pdf', 'zip', 'binary', 'download'])
-            is_text_based = any(t in content_type_header for t in ['json', 'text', 'xml', 'html', 'javascript', 'yaml']) and not is_binary
+        if response is None:
+            return None
+        status_code = response.status_code
 
-            content_text = ''
-            pii_detected = False
-            pii_data = {}
-            sensitive_info = None
-            regex_patterns = {}
-            debug_info_only = False
-
-            if is_text_based and response.content:
-                try:
-                    content_text = response.content.decode('utf-8', errors='ignore')
-
-                    sensitive_info, regex_patterns = detect_sensitive_info(content_text)
-
-                    is_short_error = status_code >= 400 and len(content_text) < 150 and sensitive_info and 'Debug Information' in sensitive_info
-
-                    if not is_short_error:
-                        pii_detected, pii_data = self.pii_analyzer.analyze_content(content_text)
-                    else:
-                        debug_info_only = True
-
-                except Exception:
-                    pass
-
-            result = self._build_result(method, full_url, full_path, data, status_code, len(response.content), pii_detected, pii_data, sensitive_info, regex_patterns, content_text, response.headers, debug_info_only)
-
+        if status_code in [401, 403] and not self.args.all:
             if self.args.verbose:
-                log(f"{method.upper()} {full_url} returned {status_code}", level="SUCCESS" if status_code == 200 else "WARNING")
+                log(f"Skipping endpoint {method.upper()} {full_url} due to status code {status_code}", level="INFO")
+            return None
 
-            return result
+        content_type_header = response.headers.get('Content-Type', '').lower()
+        is_binary = any(b in content_type_header for b in ['image', 'octet-stream', 'pdf', 'zip', 'binary', 'download'])
+        is_text_based = any(t in content_type_header for t in ['json', 'text', 'xml', 'html', 'javascript', 'yaml']) and not is_binary
 
-        except requests.exceptions.RequestException as e:
-            if self.args.verbose:
-                log(f"Error testing {method.upper()} {full_url}: {e}", level="DEBUG")
-        return None
+        content_text = ''
+        pii_detected = False
+        pii_data = {}
+        sensitive_info = None
+        regex_patterns = {}
+        debug_info_only = False
 
-    def _build_result(self, method, url, path_template, data, status_code, content_length, pii_detected, pii_data, sensitive_info, regex_patterns, content_text, response_headers, debug_info_only=False):
+        if is_text_based and response.content:
+            try:
+                content_text = response.content.decode('utf-8', errors='ignore')
+
+                sensitive_info, regex_patterns = detect_sensitive_info(content_text)
+
+                is_short_error = status_code >= 400 and len(content_text) < 150 and sensitive_info and 'Debug Information' in sensitive_info
+
+                if not is_short_error:
+                    pii_detected, pii_data = self.pii_analyzer.analyze_content(content_text)
+                else:
+                    debug_info_only = True
+
+            except Exception:
+                pass
+
+        result = self._build_result(method, full_url, full_path, data, status_code, len(response.content), pii_detected, pii_data, sensitive_info, regex_patterns, content_text, response.headers, debug_info_only, sensitive_params)
+
+        if self.args.verbose:
+            log(f"{method.upper()} {full_url} returned {status_code}", level="SUCCESS" if status_code == 200 else "WARNING")
+
+        return result
+
+    def _build_result(self, method, url, path_template, data, status_code, content_length, pii_detected, pii_data, sensitive_info, regex_patterns, content_text, response_headers, debug_info_only=False, sensitive_params=None):
         body_for_output = ""
         if data:
             if isinstance(data, bytes):
@@ -196,9 +272,10 @@ class Requester:
             "method": method.upper(), "url": url, "path_template": path_template, "body": body_for_output,
             "status_code": status_code, "content_length": content_length, "pii_detected": pii_detected,
             "pii_data": None, "pii_detection_details": None, "debug_info_detected": False,
-            "interesting_response": False, "regex_patterns_found": {},
+            "interesting_response": False, "regex_patterns_found": regex_patterns or {},
             "response_body": content_text,
-            "response_headers": dict(response_headers)
+            "response_headers": dict(response_headers),
+            "sensitive_parameters": sensitive_params or []
         }
 
         if sensitive_info:
@@ -212,11 +289,15 @@ class Requester:
                     pii_data[key]['detection_methods'].add('regex')
 
         if pii_data and not debug_info_only:
-            result['pii_detected'] = True
-            result["pii_data"] = {k: list(v['values'])[:2] for k, v in pii_data.items()}
-            result["pii_detection_details"] = {k: {"detection_methods": list(v['detection_methods'])} for k, v in pii_data.items()}
+            norm_data, norm_details = self.validator.validate_finding(pii_data)
+            if norm_data:
+                result['pii_detected'] = True
+                result["pii_data"] = norm_data
+                result["pii_detection_details"] = norm_details
+            else:
+                result['pii_detected'] = False
 
-        result['interesting_response'] = (result['pii_detected'] or result['debug_info_detected'] or self._is_large_response(content_text))
+        result['interesting_response'] = (result['pii_detected'] or result['debug_info_detected'] or bool(result['sensitive_parameters']) or self._is_large_response(content_text))
         return result
 
     def _generate_parameter_values(self, param_type, enum=None):

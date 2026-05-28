@@ -35,10 +35,21 @@ TRUFFLEHOG_REGEXES = {
     "Twilio API Key": r"SK[0-9a-fA-F]{32}",
     "Twitter Access Token": r"[tT][wW][iI][tT][tT][eE][rR].*[1-9][0-9]+-[0-9a-zA-Z]{40}",
     "Twitter OAuth": r"[tT][wW][iI][tT][tT][eE][rR].*['\"]?[0-9a-zA-Z]{35,44}['\"]?",
-    "JSON Web Token": r"ey[A-Za-z0-9-_=]+\.ey[A-Za-z0-9-_=]+\.?[A-Za-z0-9-_.+/=]*",
     "Azure Client Secret": r"[A-Za-z0-9\._~\-]{40}",
     "Google Cloud API Key": r"[A-Za-z0-9_]{21}--[A-Za-z0-9_]{8}",
     "Ethereum Private Key": r"0x[0-9a-fA-F]{64}",
+    
+    # Advanced Patterns
+    "JWT Token": r"ey[A-Za-z0-9-_=]+\.ey[A-Za-z0-9-_=]+\.?[A-Za-z0-9-_.+/=]*",
+    "Private Key (ed25519)": r"-----BEGIN PRIVATE KEY-----[\s\S]+?-----END PRIVATE KEY-----",
+    "Asymmetric Key (RSA)": r"-----BEGIN RSA PRIVATE KEY-----",
+    "API Key (Generic)": r"\b(?:api[_-]?key|apikey|access[_-]?key)\s*[:=]\s*['\"]?([a-zA-Z0-9\-_]{20,})['\"]?",
+    "OpenAI API Key": r"\bsk-(?:proj-)?[a-zA-Z0-9_-]{20,}\b",
+    "AWS Secret Access Key": r"(?<![A-Za-z0-9/+=])[A-Za-z0-9/+=]{40}(?![A-Za-z0-9/+=])",
+    "GitHub Token (Modern)": r"github_pat_[a-zA-Z0-9]{22}_[a-zA-Z0-9]{59}|gh[pousr]_[a-zA-Z0-9]{36}",
+    "Slack Token (Modern)": r"xox[bp]-[0-9]{11,13}-[0-9]{11,13}-[a-zA-Z0-9]{24}",
+    "Discord Bot Token": r"\b[a-zA-Z0-9_-]{24}\.[a-zA-Z0-9_-]{6}\.[a-zA-Z0-9_-]{27,38}\b",
+    "Database Connection URI": r"\b(?:postgres|postgresql|mongodb|mysql|redis)://[^/\s:@]+:[^/\s:@]+@.{1,100}\b",
 }
 
 # Compile the regexes for performance
@@ -69,10 +80,20 @@ def detect_sensitive_info(content):
     for name, pattern in COMPILED_TRUFFLEHOG_REGEXES.items():
         matches = pattern.findall(content)
         if matches:
-            # FIX: Filter out false positives from repeating characters (e.g., "AAAA...")
             filtered_matches = [match for match in matches if len(set(match)) > 1]
             if filtered_matches:
-                sensitive_info.setdefault(name, []).extend(filtered_matches)
+                if name in ("JWT Token", "JSON Web Token"):
+                    masked_matches = []
+                    for m in filtered_matches:
+                        parts = m.split('.')
+                        if len(parts) >= 3:
+                            # Masquer la signature du JWT
+                            masked_matches.append(f"{parts[0]}.{parts[1]}.[REDACTED]")
+                        else:
+                            masked_matches.append(m)
+                    sensitive_info.setdefault(name, []).extend(masked_matches)
+                else:
+                    sensitive_info.setdefault(name, []).extend(filtered_matches)
                 regex_patterns[name] = pattern.pattern
 
     debug_info_found = DEBUG_INFO_PATTERN.findall(content)

@@ -33,16 +33,19 @@ This software is provided "as is," without warranty of any kind, express or impl
 
 ## Key Features
 
-* **Advanced Specification Discovery:** Employs a multi-phase discovery process that includes direct parsing, intelligent analysis of Swagger UI pages, and context-aware path bruteforcing, ensuring compatibility with modern frameworks such as Spring Boot.
+* **Advanced Specification Discovery:** Employs a multi-phase discovery process that includes direct parsing, intelligent analysis of Swagger UI pages, and context-aware path bruteforcing, ensuring compatibility with modern frameworks such as Spring Boot. **New:** An intelligent caching system prevents duplicate requests during complex discovery phases.
+
+* **Extensive OpenAPI Support:** Precise version detection (e.g., 3.0.4, 3.1) and native support for testing OpenAPI 3.1 Webhooks (safely skipping unresolved runtime expressions).
 
 * **Comprehensive Security Testing:**
 
-    * **PII & Secret Detection:** Scans API responses for a wide range of secrets (e.g., API keys, JWTs) and an extensive set of Personally Identifiable Information types, including financial, national, and technical identifiers.
+    * **PII & Secret Detection:** Scans API responses for a wide range of secrets (e.g., API keys, JWTs) and Personally Identifiable Information types. **New:** Advanced detection patterns for JWTs (with automatic signature masking to prevent credential leakage in reports), Asymmetric Keys (RSA, ed25519), and Generic API Keys. Also implements **Sensitive Parameter Detection** to identify credentials, keys, financial data, or PII exposed in query/path parameters (CWE-598).
 
-    * **Authorization Testing:** Automates tests for critical access control vulnerabilities:
+    * **Authorization & Resource Testing:** Automates tests for access control and denial of service issues:
         * **BOLA (Broken Object Level Authorization):** Checks if users can access resources belonging to others.
         * **BFLA (Broken Function Level Authorization):** Checks if users can access administrative or privileged functions.
         * **BOPLA (Broken Object Property Level Authorization):** Checks if users can modify sensitive object properties (e.g., changing their role to "admin").
+        * **URC (Unrestricted Resource Consumption):** Checks if pagination or count parameters fail to validate boundaries, leading to potential Denial of Service (DoS) vectors.
 
     * **Dynamic Payload Generation:** Utilizes a comprehensive set of test vectors to probe for common vulnerability classes, including SQL Injection, NoSQL Injection, Cross-Site Scripting (XSS), and Command Injection.
 
@@ -50,9 +53,9 @@ This software is provided "as is," without warranty of any kind, express or impl
 
 * **Support for Authenticated Scanning:** Facilitates testing of endpoints with or without authentication. Credentials can be supplied via generic custom headers or through user-friendly flags designed for common token-based authentication schemes.
 
-* **Structured Reporting:** Presents findings in either a formatted, human-readable table or a structured JSON format suitable for automated processing. The output clearly differentiates between high-priority secret disclosures and lower-priority debug information.
+* **Structured Reporting:** Presents findings in either a formatted, human-readable table or a structured JSON format suitable for automated processing. **New:** Intelligent filtering by risk allows you to filter the output by severity (`-severity critical|high|medium|low`).
 
-* **Robust and Configurable Operation:** The tool is multi-threaded for performance, supports rate limiting to prevent service disruption, and provides a suite of command-line arguments to customize scan behavior and output.
+* **Robust and Configurable Operation:** The tool is multi-threaded for performance, supports rate limiting to prevent service disruption, and implements **automatic retries with exponential backoff** to handle connection errors and timeouts against unstable APIs.
 
 ## Installation & Usage
 
@@ -86,8 +89,8 @@ This software is provided "as is," without warranty of any kind, express or impl
 ## Options
 
 ```
-usage: autoswagger2 [-h] [-V] [-v] [-rate RATE] [-risk] [-all] [-b] [--test-bfla] [--test-bopla] [-H ] [--api-key ] [--api-key-src ] [--key-header ] [--key-prefix ]
-                    [--bola] [--bola-id "param=id"] [-product] [-stats] [-json]
+usage: autoswagger2 [-h] [-V] [-v] [-rate RATE] [--openapi-version OPENAPI_VERSION] [-risk] [-all] [-b] [--test-bfla] [--test-bopla] [--test-urc] [-H ] [--api-key ] [--api-key-src ] [--key-header ] [--key-prefix ]
+                    [--bola] [--bola-id "param=id"] [-product] [-stats] [-json] [-csv] [-sarif] [-html] [--out FILE] [-severity {critical,high,medium,low}]
                     [urls ...]
 
 AutoSwagger2: Detect unauthenticated access control issues via Swagger2/OpenAPI documentation.
@@ -99,7 +102,8 @@ options:
   -h, --help            show this help message and exit
   -V, --version         show program's version number and exit
   -v, --verbose         Enable verbose output
-  -rate RATE            Set the rate limit in requests per second (default: 30). Use 0 to disable rate limiting.
+  -rate RATE            Set the limit of requests per second (default: 30). Use 0 to disable rate limiting.
+  --openapi-version     Force OpenAPI version detection (e.g. 2.0, 3.0.1, 3.0.4, 3.1). If not specified, auto-detect.
 
 Scan Behavior:
   -risk                 Include non-GET requests in testing
@@ -107,6 +111,7 @@ Scan Behavior:
   -b, --brute           Enable exhaustive testing of parameter values.
   --test-bfla           Test for Broken Function Level Authorization (BFLA). Requires an auth header.
   --test-bopla          Test for Broken Object Property Level Authorization (BOPLA).
+  --test-urc            Test for Unrestricted Resource Consumption (DoS).
 
 Authentication:
   -H, --header          Add a custom Key:Value header to all requests (e.g., "Authorization: Bearer ...")
@@ -114,6 +119,7 @@ Authentication:
   --api-key-src         File containing the API key/token (useful for long tokens).
   --key-header          Header name for the API key/token (default: Authorization).
   --key-prefix          Prefix for the API key/token value (default: "Bearer "). Use "" for no prefix.
+  --user-agent UA       Specify a custom User-Agent header for all requests.
 
 BOLA Testing:
   --bola                Enable BOLA testing mode.
@@ -123,6 +129,11 @@ Output:
   -product              Output all endpoints in JSON, flagging those that contain PII or have large responses.
   -stats                Display scan statistics. Included in JSON if -product or -json is used.
   -json                 Output results in JSON format in default mode.
+  -csv                  Output results in CSV format.
+  -sarif                Output results in SARIF format.
+  -html                 Output results in HTML format.
+  --out FILE            Save output to file (used with -csv, -sarif, -html).
+  -severity             Filter results by minimum severity level (critical, high, medium, low).
 ```
 
 ## Discovery Phases
@@ -175,6 +186,8 @@ Upon successful parsing of a specification, the utility initiates a systematic t
         * `-H` / `--header`: For any generic header (e.g., `Authorization: Bearer <token>`). This option may be specified multiple times.
 
         * `--api-key`: A user-friendly shortcut for common token-based authentication schemes.
+
+        * `--user-agent`: Specific shortcut to set a custom User-Agent string.
 
 4. **Parameter & Body Generation**
 
@@ -256,6 +269,23 @@ python -m autoswagger2 https://api.example.com \
 python -m autoswagger2 https://api.example.com --test-bopla
 ```
 
+## URC Testing
+
+`AutoSwagger2` can test for Unrestricted Resource Consumption (URC / API Rate Limiting and DoS vulnerabilities) by injecting extreme values into pagination and size parameters.
+
+### How it Works
+
+1.  **Activation:** The test is enabled by using the `--test-urc` flag.
+2.  **Target Identification:** The tool automatically identifies all `GET` endpoints in the specification that accept query parameters commonly associated with pagination or count (e.g., `limit`, `size`, `page`, `offset`, `max`, `count`).
+3.  **Attack Phase:** It dispatches requests with an extreme value (e.g., `999999`) to these parameters.
+4.  **Verification:** A URC vulnerability is flagged if the request triggers a severe response delay (exceeding 5 seconds), a server timeout, or returns a response size larger than 500 KB, indicating a failure to enforce pagination boundaries on the server side.
+
+### Example Usage
+
+```bash
+python -m autoswagger2 https://api.example.com --test-urc
+```
+
 ## Response Analysis & Data Leakage Detection
 
 `AutoSwagger2` extends beyond simple accessibility checks by performing a multi-layered analysis on the content of every successful response to identify potential data leaks.
@@ -308,13 +338,21 @@ By default, results are displayed in a formatted table in your terminal. This vi
 
 * **Body:** When using the `-risk` flag, this column shows the request body that was sent to the server.
 
-### JSON Output
+### Multiple Output Formats
 
-For automation and integration, you can use one of the JSON output options:
+For automation and integration, you can use one of the several output options:
 
 * **`-json`:** Outputs a detailed JSON array containing the "best" result for every tested endpoint. This is useful for custom scripting or manual review of all findings.
 
 * **`-product`:** Produces a filtered JSON output containing **only** the endpoints that are considered "interesting" (i.e., those with PII/Secrets, debug info, or unusually large responses). This mode is ideal for feeding results into other security tools or for CI/CD pipelines where you only want to be alerted to potential issues.
+
+* **`-csv`:** Exports the results as a standard Comma Separated Values file, making it easy to open in Excel or other spreadsheet tools.
+
+* **`-sarif`:** Exports the results in the Static Analysis Results Interchange Format (SARIF). This format is natively supported by GitHub Security Alerts, VS Code, and other modern CI/CD tools.
+
+* **`-html`:** Generates an interactive and visually appealing HTML report that can be opened in any web browser.
+
+* **`--out <FILE>`:** Specifies the output file name for the `-csv`, `-sarif`, and `-html` formats. If omitted, a default name (e.g., `autoswagger_report.csv`) will be used.
 
 ### Statistics
 

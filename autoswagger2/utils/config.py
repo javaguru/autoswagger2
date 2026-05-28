@@ -1,7 +1,7 @@
 # autoswagger2/utils/config.py
 # Contains all global constants and configurations.
 
-__version__ = "2.0.1"
+__version__ = "2.0.3"
 
 # --- IMPROVEMENT: Expanded discovery paths based on Nuclei templates ---
 SWAGGER_UI_PATHS = sorted({
@@ -27,7 +27,11 @@ SWAGGER_UI_PATHS = sorted({
     "/swaggerui/", "/swaggerui/index.html", "/v1/api-docs/", "/v1/api-docs/index.html",
     "/v1/swagger-ui.html", "/v3/api-docs/ui", "/webapi/index.html",
     "/webapi/swagger/index.html", "/webjars/springfox-swagger-ui/3.0.0/swagger-ui.html",
-    "/webjars/swagger-ui/2.2.5/index.html"
+    "/webjars/swagger-ui/2.2.5/index.html",
+    # UI Paths for OpenAPI 3.1
+    "/v3.1/api-docs/ui", "/v3.1/swagger-ui.html",
+    "/api/v3.1/swagger-ui.html", "/openapi3.1/swagger-ui.html",
+    "/api/openapi3.1/swagger-ui.html", "/docs/openapi3.1/ui",
 })
 
 DIRECT_SPEC_PATHS = sorted({
@@ -53,6 +57,15 @@ DIRECT_SPEC_PATHS = sorted({
     "/api-docs/openapi.json", "/api-docs/openapi.yaml",
     "/swagger-ui.json", "/swagger-ui.yaml",
     "/v2/api-docs", "/v3/api-docs",
+
+    "/v3.1/api-docs", "/v3.1/openapi.json", "/v3.1/openapi.yaml", "/v3.1/openapi.yml",
+    "/api/v3.1/openapi.json", "/api/v3.1/openapi.yaml", "/api/v3.1/openapi.yml",
+    "/openapi3.1.json", "/openapi3.1.yaml", "/openapi3.1.yml",
+    "/api/openapi3.1.json", "/api/openapi3.1.yaml", "/api/openapi3.1.yml",
+    "/docs/openapi3.1.json", "/docs/openapi3.1.yaml",
+    "/spec/openapi3.1.json", "/spec/openapi3.1.yaml",
+    "/specs/openapi.json", "/specs/openapi.yaml",
+    "/api-specs/openapi.json", "/api-specs/openapi.yaml",
 })
 
 # --- IMPROVEMENT: More creative and comprehensive test values ---
