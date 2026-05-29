@@ -52,3 +52,69 @@ def sample_openapi_3_1_spec():
             }
         }
     }
+
+# More specs test
+@pytest.fixture
+def sample_spec_with_parameters():
+    return {
+        'openapi': '3.0.1',
+        'paths': {
+            '/users/{userId}': {
+                'get': {
+                    'parameters': [
+                        {
+                            'name': 'userId',
+                            'in': 'path',
+                            'required': True,
+                            'schema': {'type': 'string'}
+                        },
+                        {
+                            'name': 'include_details',
+                            'in': 'query',
+                            'schema': {'type': 'boolean'}
+                        }
+                    ]
+                }
+            }
+        }
+    }
+
+# Spec with requestBody
+@pytest.fixture
+def sample_spec_with_request_body():
+    return {
+        'openapi': '3.0.1',
+        'paths': {
+            '/users': {
+                'post': {
+                    'requestBody': {
+                        'required': True,
+                        'content': {
+                            'application/json': {
+                                'schema': {
+                                    'type': 'object',
+                                    'properties': {
+                                        'name': {'type': 'string'},
+                                        'email': {'type': 'string'}
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+# Spec complexe
+@pytest.fixture
+def sample_complex_spec():
+    return {
+        'openapi': '3.0.1',
+        'info': {'title': 'Complex API', 'version': '1.0'},
+        'paths': {
+            '/admin/users': {'get': {}},
+            '/admin/settings': {'post': {}},
+            '/users/{id}': {'get': {}, 'put': {}, 'delete': {}}
+        }
+    }

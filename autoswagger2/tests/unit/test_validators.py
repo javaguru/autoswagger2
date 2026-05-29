@@ -66,3 +66,53 @@ class TestResultValidator:
         }
         _, details = self.validator.validate_finding(pii_data_presidio)
         assert details['EMAIL_ADDRESS']['confidence'] == 'medium'
+
+    # mixed findings
+    def test_mixed_findings_confidence(self):
+        pii_data = {
+            'JWT': {
+                'values': {'ey...'},
+                'detection_methods': {'regex'}  # high
+            },
+            'EMAIL_ADDRESS': {
+                'values': {'user@acme.com'},
+                'detection_methods': {'presidio'}  # medium
+            }
+        }
+        result, details = self.validator.validate_finding(pii_data)
+        assert details['JWT']['confidence'] == 'high'
+        assert details['EMAIL_ADDRESS']['confidence'] == 'medium'
+
+    # Test edge case - short value
+    def test_eliminate_short_values(self):
+        pii_data = {
+            'PERSON': {
+                'values': {'ab', 'abc'},  # 'ab' < 3 chars
+                'detection_methods': {'presidio'}
+            }
+        }
+        result, details = self.validator.validate_finding(pii_data)
+        assert 'ab' not in result['PERSON']
+        assert 'abc' in result['PERSON']
+
+    # None input
+    def test_none_pii_data(self):
+        result, details = self.validator.validate_finding(None)
+        assert result is None
+        assert details is None
+
+    # empty findings
+    def test_empty_pii_data(self):
+        result, details = self.validator.validate_finding({})
+        assert result is None
+
+    # SECRET
+    def test_secret_category(self):
+        pii_data = {
+            'AWS_KEY': {
+                'values': {'AKIAIOSFODNN7EXAMPLE'},
+                'detection_methods': {'regex'}
+            }
+        }
+        _, details = self.validator.validate_finding(pii_data)
+        assert details['AWS_KEY']['category'] == 'Secret/Credential'
