@@ -7,7 +7,11 @@ class ResultValidator:
         self.false_positives = [
             "example.com", "test@test.com", "dummy", "placeholder", "string",
             "123456789", "000000000", "111111111", "999999999",
-            "password", "secret", "undefined", "null"
+            "password", "secret", "undefined", "null", "test",
+            "demo", "mock", "sample", "fixture", "stub",
+            "example@example.com", "test.example.com", "admin@admin.com",
+            "127.0.0.1", "localhost", "0.0.0.0",
+            "user123", "admin123", "test123", "demo123"
         ]
 
     def validate_finding(self, pii_data):
@@ -28,10 +32,10 @@ class ResultValidator:
             valid_values = []
             for val in raw_values:
                 val_str = str(val).strip()
-                
+
                 # Checks for false positives
                 is_fp = any(fp in val_str.lower() for fp in self.false_positives)
-                
+
                 # Eliminates strings that are too short or false positives
                 if not is_fp and len(val_str) >= 3:
                     # Eliminates duplicates (while preserving appearance order)
@@ -41,7 +45,7 @@ class ResultValidator:
             if valid_values:
                 # Limit to 3 examples to avoid cluttering reports
                 normalized_data[finding_type] = valid_values[:3]
-                
+
                 # Enriches the metadata
                 is_critical = 'regex' in methods
                 detection_details[finding_type] = {

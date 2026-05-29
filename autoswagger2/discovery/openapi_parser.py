@@ -3,7 +3,8 @@
 
 from enum import Enum
 from typing import Literal
-
+import logging
+logger = logging.getLogger(__name__)
 
 class OpenAPIVersion(Enum):
     SWAGGER_2_0 = "2.0"
@@ -12,13 +13,17 @@ class OpenAPIVersion(Enum):
 
 class OpenAPIParser:
     def __init__(self, spec_data, force_version=None):
-        self.spec_data = spec_data
-        if force_version:
-            self.raw_version = force_version
-        else:
-            self.raw_version = self.spec_data.get('openapi') or self.spec_data.get('swagger', 'Unknown')
+        try:
+            self.spec_data = spec_data
+            if force_version:
+                self.raw_version = force_version
+            else:
+                self.raw_version = self.spec_data.get('openapi') or self.spec_data.get('swagger', 'Unknown')
 
-        self.version = self._detect_version()
+            self.version = self._detect_version()
+        except Exception as e:
+            logger.error(f"Failed to initialize OpenAPIParser: {e}")
+            raise
 
     def _detect_version(self) -> Literal[OpenAPIVersion.SWAGGER_2_0, OpenAPIVersion.OPENAPI_3_0, OpenAPIVersion.OPENAPI_3_1] | None:
         """Detect OpenAPI version from spec"""
@@ -54,14 +59,26 @@ class OpenAPIParser:
         paths = self.spec_data.get('paths', {})
 
         for path, path_item in paths.items():
+            if not isinstance(path_item, dict):
+                logger.warning(f"Invalid path item for {path}, skipping")
+                continue
+
             for method, operation in path_item.items():
-                if method in ['get', 'post', 'put', 'delete', 'patch', 'head', 'options', 'trace']:
-                    endpoints.append({
-                        'path': path,
-                        'method': method,
-                        'type': 'endpoint',
-                        'operation': operation
-                    })
+                try:
+                    if method in ['get', 'post', 'put', 'delete', 'patch', 'head', 'options', 'trace']:
+                        if not isinstance(operation, dict):
+                            logger.warning(f"Invalid operation for {method} {path}, skipping")
+                            continue
+
+                        endpoints.append({
+                            'path': path,
+                            'method': method,
+                            'type': 'endpoint',
+                            'operation': operation
+                        })
+                except Exception as e:
+                    logger.error(f"Error processing {method} {path}: {e}")
+                    continue
 
         return endpoints
 
