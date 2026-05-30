@@ -1,5 +1,6 @@
 # [AutoSwagger2](https://github.com/javaguru/autoswagger2) by **[Franck Andriano.](http://jservlet.com)**
 
+[![Build](https://github.com/javaguru/autoswagger2/actions/workflows/dynamic/github-code-scanning/codeql/badge.svg?branch=master)](https://github.com/javaguru/autoswagger2/actions/workflows/dynamic/github-code-scanning/codeql)
 [![Tests](https://github.com/javaguru/autoswagger2/actions/workflows/tests.yml/badge.svg)](https://github.com/javaguru/autoswagger2/actions/workflows/tests.yml)
 
 <a href="http://jservlet.com">
