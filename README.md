@@ -1,4 +1,7 @@
 # [AutoSwagger2](https://github.com/javaguru/autoswagger2) by **[Franck Andriano.](http://jservlet.com)**
+
+[![Tests](https://github.com/javaguru/autoswagger2/actions/workflows/tests.yml/badge.svg)](https://github.com/javaguru/autoswagger2/actions/workflows/tests.yml)
+
 <a href="http://jservlet.com">
   <img width="200" height="300" alt="output" src="https://github.com/javaguru/autoswagger2/blob/master/image/output2.png" />
 </a>
@@ -284,6 +287,48 @@ python -m autoswagger2 https://api.example.com --test-bopla
 
 ```bash
 python -m autoswagger2 https://api.example.com --test-urc
+```
+
+## 🛠️ Complete use case
+
+### Standard Scan + Stats
+
+```bash
+python -m autoswagger2 https://api.example.com -v -stats
+```
+
+### High Severity Scan + SARIF for CI/CD
+
+```bash
+python -m autoswagger2 https://api.example.com \
+-severity critical \
+-sarif --out sarif-report.sarif
+```
+
+### Full Scan + All Tests + CSV
+
+```bash
+python -m autoswagger2 https://api.example.com \
+-risk \
+--test-bola --test-bfla --test-bopla --test-urc \
+-csv --out full-report.csv
+```
+
+### Custom User-Agent + Proxy + OpenAPI 3.1
+
+```bash
+python -m autoswagger2 https://api.example.com \
+--user-agent "Mozilla/5.0 (X11; Linux x86_64)" \
+--openapi-version 3.1 \
+-html --out report.html
+```
+
+### JSON Filter High Only
+
+```bash
+python -m autoswagger2 https://api.example.com \
+-severity high \
+-json | jq '.results[] | select(.pii_detected==true)'
 ```
 
 ## Response Analysis & Data Leakage Detection

@@ -13,3 +13,4 @@ env
 *.zip
 .idea
 .coverage
+coverage.xml
