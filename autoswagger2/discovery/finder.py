@@ -109,9 +109,12 @@ class SpecFinder:
                 try:
                     spec = yaml.safe_load(content_text)
                 except yaml.YAMLError as perr:
-                    if self.args.verbose:
-                        log(f"Failed to parse content from {url} as either JSON or YAML. YAML Error: {perr}", level="DEBUG")
-                    return None
+                    # Fallback: check if it's a JavaScript file containing embedded swaggerDoc
+                    spec = self._extract_embedded_swagger_doc(content_text)
+                    if not spec:
+                        if self.args.verbose:
+                            log(f"Failed to parse content from {url} as either JSON, YAML, or embedded swaggerDoc. YAML Error: {perr}", level="DEBUG")
+                        return None
 
             if spec:
                 if isinstance(spec, dict) and ('openapi' in spec or 'swagger' in spec or 'paths' in spec):
@@ -137,8 +140,68 @@ class SpecFinder:
                 log(f"Error fetching Swagger/OpenAPI spec from {url}: {e}", level="DEBUG")
         return None
 
+    def _extract_embedded_swagger_doc(self, js_content):
+        """
+        Attempts to extract a balanced JSON/YAML block assigned to the 'swaggerDoc' property
+        inside JavaScript init files (such as swagger-ui-init.js).
+        """
+        match = re.search(r'["\']?swaggerDoc["\']?\s*:\s*(\{)', js_content)
+        if not match:
+            return None
+
+        start_idx = match.start(1)
+        brace_count = 0
+        in_string = False
+        string_char = None
+        escaped = False
+
+        for i in range(start_idx, len(js_content)):
+            char = js_content[i]
+
+            if escaped:
+                escaped = False
+                continue
+
+            if char == '\\':
+                escaped = True
+                continue
+
+            if char in ('"', "'", "`"):
+                if not in_string:
+                    in_string = True
+                    string_char = char
+                elif string_char == char:
+                    in_string = False
+                    string_char = None
+                continue
+
+            if in_string:
+                continue
+
+            if char == '{':
+                brace_count += 1
+            elif char == '}':
+                brace_count -= 1
+                if brace_count == 0:
+                    json_str = js_content[start_idx : i + 1]
+                    try:
+                        return json.loads(json_str)
+                    except json.JSONDecodeError:
+                        try:
+                            return yaml.safe_load(json_str)
+                        except Exception:
+                            return None
+        return None
+
     def _extract_spec_from_content(self, content, base_url):
-        spec_var_match = re.search(r'(?:const|var|let)\s+\w+(?:Url|URL)?\s*=\s*["\']([^"\']+(?:swagger|openapi)\.(?:json|yaml|yml))["\']', content)
+        # 1. Try to extract embedded swaggerDoc directly (e.g. swagger-ui-init.js)
+        embedded_spec = self._extract_embedded_swagger_doc(content)
+        if embedded_spec and isinstance(embedded_spec, dict) and ('openapi' in embedded_spec or 'swagger' in embedded_spec or 'paths' in embedded_spec):
+            if self.args.verbose:
+                log(f"Found embedded swaggerDoc directly in content of {base_url}", level="DEBUG")
+            return embedded_spec, base_url
+
+        spec_var_match = re.search(r'(?:const|var|let)\s+\w+(?:Url|URL)?\s*=\s*["\']([^"\']*(?:swagger|openapi)\.(?:json|yaml|yml))["\']', content)
         if spec_var_match:
             spec_path = spec_var_match.group(1)
             full_spec_url = urljoin(base_url, spec_path)

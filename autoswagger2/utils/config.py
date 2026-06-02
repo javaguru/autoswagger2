@@ -1,7 +1,7 @@
 # autoswagger2/utils/config.py
 # Contains all global constants and configurations.
 
-__version__ = "2.0.2"
+__version__ = "2.0.3"
 
 # --- IMPROVEMENT: Expanded discovery paths based on Nuclei templates ---
 SWAGGER_UI_PATHS = sorted({
@@ -66,6 +66,11 @@ DIRECT_SPEC_PATHS = sorted({
     "/spec/openapi3.1.json", "/spec/openapi3.1.yaml",
     "/specs/openapi.json", "/specs/openapi.yaml",
     "/api-specs/openapi.json", "/api-specs/openapi.yaml",
+
+    # swagger-ui-init.js paths (Express swagger-ui-express, etc.)
+    "/swagger-ui-init.js", "/swagger-ui/swagger-ui-init.js", "/swagger/swagger-ui-init.js",
+    "/api/swagger-ui-init.js", "/api/docs/swagger-ui-init.js", "/api/v1/docs/swagger-ui-init.js",
+    "/docs/swagger-ui-init.js", "/v1/docs/swagger-ui-init.js",
 })
 
 # --- IMPROVEMENT: More creative and comprehensive test values ---
