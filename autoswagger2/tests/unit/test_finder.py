@@ -1,6 +1,7 @@
 # tests/unit/test_finder.py
 import argparse
 import requests
+from unittest.mock import MagicMock
 from autoswagger2.discovery.finder import SpecFinder
 
 # --- Mocks for requests.Session ---
@@ -188,3 +189,104 @@ def test_fetch_swagger_spec_exceptions():
     finder.cache.get_cached_spec = lambda url: None  # Disable file-system cache interference
     spec = finder._fetch_swagger_spec("http://localhost/exception")
     assert spec is None
+
+def test_fetch_swagger_spec_cached():
+    args = argparse.Namespace(verbose=True, product=False)
+    session = requests.Session()
+    finder = SpecFinder("http://localhost/cached", args, session)
+    
+    # Mock cache to return a spec
+    cached_spec = {"swagger": "2.0", "paths": {}}
+    finder.cache.get_cached_spec = lambda url: cached_spec
+    
+    spec = finder._fetch_swagger_spec("http://localhost/cached")
+    assert spec == cached_spec
+
+def test_extract_embedded_swagger_doc_escapes_and_errors():
+    args = argparse.Namespace(verbose=True, product=False)
+    session = requests.Session()
+    finder = SpecFinder("http://localhost", args, session)
+
+    # Test escape sequences inside strings
+    js_content = 'var config = { "swaggerDoc": {"name": "hello\\\\world", "description": "quote\\""} };'
+    extracted = finder._extract_embedded_swagger_doc(js_content)
+    assert extracted is not None
+    assert extracted["name"] == "hello\\world"
+
+    # Test YAML error / parse exception fallback returning None
+    # Providing unbalanced JSON/YAML that starts parsing but fails
+    js_content_bad = 'var config = { "swaggerDoc": {"name": ::::invalid} };'
+    extracted_bad = finder._extract_embedded_swagger_doc(js_content_bad)
+    assert extracted_bad is None
+
+def test_find_root_fallback_discovery():
+    args = argparse.Namespace(verbose=True, product=False)
+    
+    # We want a request to http://localhost/sub/path to fail,
+    # but the root fallback discovery to http://localhost to succeed.
+    class MockSessionWithFallback:
+        def __init__(self):
+            self.history = []
+        def get(self, url, **kwargs):
+            self.history.append(url)
+            resp = MagicMock()
+            if url == "http://localhost/openapi.json":
+                resp.status_code = 200
+                resp.text = '{"openapi": "3.0.0", "paths": {}}'
+                resp.headers = {"Content-Type": "application/json"}
+            else:
+                resp.status_code = 404
+                resp.text = "Not Found"
+                resp.headers = {}
+            return resp
+
+    session = MockSessionWithFallback()
+    # Initial base URL is a subpath
+    finder = SpecFinder("http://localhost/sub/path", args, session)
+    finder.cache.get_cached_spec = lambda url: None
+    
+    spec, spec_url = finder.find()
+    assert spec is not None
+    assert spec["openapi"] == "3.0.0"
+    assert spec_url == "http://localhost/openapi.json"
+    assert "http://localhost/openapi.json" in session.history
+
+def test_extract_spec_petstore_filter():
+    args = argparse.Namespace(verbose=True, product=False)
+    session = requests.Session()
+    finder = SpecFinder("http://localhost", args, session)
+
+    # Petstore example URL should be skipped if base_url is not petstore
+    content_petstore = 'const specUrl = "http://petstore.swagger.io/v2/swagger.json";'
+    spec, spec_url = finder._extract_spec_from_content(content_petstore, "http://localhost")
+    assert spec is None
+    assert spec_url is None
+
+    # SwaggerUI config with petstore should be skipped
+    content_ui_petstore = 'SwaggerUI({ url: "http://petstore.swagger.io/v2/swagger.json" })'
+    spec, spec_url = finder._extract_spec_from_content(content_ui_petstore, "http://localhost")
+    assert spec is None
+    assert spec_url is None
+
+def test_parse_swagger_ui_page_script_exception():
+    args = argparse.Namespace(verbose=True, product=False)
+    
+    class ExceptionSession:
+        def get(self, url, **kwargs):
+            resp = MagicMock()
+            if url == "http://localhost/swagger-ui":
+                resp.status_code = 200
+                resp.text = '<html><head><script src="app.js"></script></head><body>swagger</body></html>'
+                resp.headers = {"Content-Type": "text/html"}
+                return resp
+            else:
+                # Simulates exception downloading the script file app.js
+                raise requests.exceptions.RequestException("Network failed for script")
+
+    finder = SpecFinder("http://localhost/swagger-ui", args, ExceptionSession())
+    finder.cache.get_cached_spec = lambda url: None
+    
+    # Verify it handles the script exception gracefully and returns None (or falls back)
+    spec, spec_url = finder._parse_swagger_ui_page("http://localhost/swagger-ui")
+    assert spec is None
+
