@@ -2,10 +2,10 @@
 
 [![Build](https://github.com/javaguru/autoswagger2/actions/workflows/dynamic/github-code-scanning/codeql/badge.svg?branch=master)](https://github.com/javaguru/autoswagger2/actions/workflows/dynamic/github-code-scanning/codeql)
 [![Tests](https://github.com/javaguru/autoswagger2/actions/workflows/tests.yml/badge.svg)](https://github.com/javaguru/autoswagger2/actions/workflows/tests.yml)
+[![python](https://img.shields.io/badge/Python-3.10%20|%203.11%20|%203.12%20|%203.13%2B-orange.svg)](https://www.python.org/)
+[![License](https://img.shields.io/badge/License-BSD%203-blue.svg)](LICENSE)
 
-<a href="http://jservlet.com">
-  <img width="200" height="300" alt="output" src="https://github.com/javaguru/autoswagger2/blob/master/image/output2.png" />
-</a>
+<img width="200" height="300" alt="output" src="https://github.com/javaguru/autoswagger2/blob/master/image/output2.png" />
 <br>  
 <br>  
 
@@ -222,16 +222,46 @@ Upon successful parsing of a specification, the utility initiates a systematic t
 1.  **Activation:** The test is enabled by using the `--bola` flag in conjunction with an authentication header (`-H`) and the user's own object ID (`--bola-id`).
 2.  **Target Identification:** The tool automatically identifies all endpoints in the specification that use the specified object ID as a path parameter (e.g., `/api/users/{userId}/profile`).
 3.  **Baseline Request:** It sends a request with the user's own ID to establish a "normal" successful response (baseline).
-4.  **Attack Phase:** It then generates "neighbor" IDs (e.g., if the user's ID is 123, it will test 122 and 124) and sends requests for these resources using the original user's session.
+4.  **Attack Phase:** It automatically detects the format of the baseline ID provided in `--bola-id` and generates corresponding "neighbor" or random attack IDs:
+    *   **Integers:** If the ID is a pure integer (e.g., `123`), it tests adjacent numbers (e.g., `122`, `124`).
+    *   **UUIDs:** If the ID matches a UUID pattern (e.g., `123e4567-e89b-12d3-a456-426614174000`), it generates adjacent hex values (e.g., `...3fff`, `...4001`) and a completely random UUIDv4.
+    *   **MongoDB ObjectIDs:** If the ID is a 24-character hexadecimal MongoDB ObjectID (e.g., `507f1f77bcf86cd799439011`), it generates neighbors by incrementing/decrementing the trailing segment (e.g., `...9010`, `...9012`).
+    *   **Prefixed/Suffixed Integers:** If the ID is an integer embedded in text (e.g., `usr-123` or `id_99_suffix`), it increments/decrements the integer part while keeping the prefix and suffix intact (e.g., `usr-122`, `usr-124`).
+    *   **Fallback Strings:** If it is a generic string, it attempts common administrative/default fallback values (e.g., `admin`, `guest`, `root`, `user`, `test`).
 5.  **Verification:** A BOLA vulnerability is flagged if a request for a neighbor's resource returns a successful status code (200 OK) and a response body of a similar size to the baseline.
 
-### Example Usage
+### Example Usages
 
+#### 1. Testing with a Standard Integer ID
 ```bash
 python -m autoswagger2 https://api.example.com \
   -H "Authorization: Bearer <your_auth_token>" \
   --bola \
   --bola-id "userId=123"
+```
+
+#### 2. Testing with a UUID
+```bash
+python -m autoswagger2 https://api.example.com \
+  -H "Authorization: Bearer <your_auth_token>" \
+  --bola \
+  --bola-id "userId=123e4567-e89b-12d3-a456-426614174000"
+```
+
+#### 3. Testing with a MongoDB ObjectID
+```bash
+python -m autoswagger2 https://api.example.com \
+  -H "Authorization: Bearer <your_auth_token>" \
+  --bola \
+  --bola-id "userId=507f1f77bcf86cd799439011"
+```
+
+#### 4. Testing with a Prefixed Identifier
+```bash
+python -m autoswagger2 https://api.example.com \
+  -H "Authorization: Bearer <your_auth_token>" \
+  --bola \
+  --bola-id "userId=usr-123"
 ```
 
 The results are displayed in a separate table at the end of the scan.

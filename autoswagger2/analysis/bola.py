@@ -2,6 +2,8 @@
 # Manages BOLA (Broken Object Level Authorization) testing.
 
 import requests
+import re
+import uuid
 from urllib.parse import urljoin
 from ..utils.helpers import log
 
@@ -86,13 +88,66 @@ class BolaTester:
             return full_url, None
 
     def _generate_neighbor_ids(self, original_id):
+        neighbors = []
+        original_id_str = str(original_id).strip()
+
+        # 1. Check if it is a pure integer
         try:
-            # For now, only support integer IDs
-            int_id = int(original_id)
-            return [int_id - 1, int_id + 1]
+            int_id = int(original_id_str)
+            return [str(int_id - 1), str(int_id + 1)]
         except ValueError:
-            # In the future, we could handle UUIDs or other formats
-            return []
+            pass
+
+        # 2. Check if it is a UUID (v4 or similar)
+        uuid_pattern = r'^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-)([0-9a-fA-F]{12})$'
+        uuid_match = re.match(uuid_pattern, original_id_str)
+        if uuid_match:
+            prefix, last_part = uuid_match.groups()
+            try:
+                # Increment/decrement the integer value of the last part
+                val = int(last_part, 16)
+                # Ensure we format it back with leading zeros to 12 chars
+                neighbors.append(f"{prefix}{(val - 1) & 0xffffffffffff:012x}")
+                neighbors.append(f"{prefix}{(val + 1) & 0xffffffffffff:012x}")
+            except ValueError:
+                pass
+            # Also generate a completely random UUIDv4 as a fallback neighbor
+            neighbors.append(str(uuid.uuid4()))
+            return neighbors
+
+        # 3. Check if it is a MongoDB ObjectID (24-char hex)
+        mongo_pattern = r'^([0-9a-fA-F]{20})([0-9a-fA-F]{4})$'
+        mongo_match = re.match(mongo_pattern, original_id_str)
+        if mongo_match:
+            prefix, last_part = mongo_match.groups()
+            try:
+                val = int(last_part, 16)
+                neighbors.append(f"{prefix}{(val - 1) & 0xffff:04x}")
+                neighbors.append(f"{prefix}{(val + 1) & 0xffff:04x}")
+            except ValueError:
+                pass
+            return neighbors
+
+        # 4. Check if it has an integer embedded with a prefix/suffix (e.g. usr-123 or id_123)
+        prefix_suffix_pattern = r'^([a-zA-Z_-]+)(\d+)([a-zA-Z_-]*)$'
+        ps_match = re.match(prefix_suffix_pattern, original_id_str)
+        if ps_match:
+            prefix, num_str, suffix = ps_match.groups()
+            try:
+                val = int(num_str)
+                neighbors.append(f"{prefix}{val - 1}{suffix}")
+                neighbors.append(f"{prefix}{val + 1}{suffix}")
+            except ValueError:
+                pass
+            return neighbors
+
+        # 5. Fallback for string identifiers: try common alternatives
+        common_fallbacks = ["admin", "guest", "root", "user", "test"]
+        for fallback in common_fallbacks:
+            if fallback != original_id_str.lower():
+                neighbors.append(fallback)
+        
+        return neighbors
 
     def _compare_responses(self, baseline, attack):
         if attack.status_code == 200:
