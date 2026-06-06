@@ -311,7 +311,7 @@ class Requester:
                 param_name = param.get('name')
                 value = value_mapping.get(param_name)
                 if value is not None:
-                    path = re.sub(rf'{{{param_name}}}|:{param_name}|<{param_name}>', str(value), path)
+                    path = re.sub(rf'{{{param_name}}}|:{param_name}|<{param_name}>', lambda m: str(value), path)
         return path
 
     def _generate_query_string(self, parameters, value_mapping):

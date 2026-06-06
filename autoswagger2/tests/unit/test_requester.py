@@ -49,6 +49,7 @@ def test_substitute_path_parameters():
     assert req._substitute_path_parameters("/users/{id}/profile/{name}", params, val_map) == "/users/123/profile/bob"
     assert req._substitute_path_parameters("/users/:id", [{"name": "id", "in": "path"}], {"id": 123}) == "/users/123"
     assert req._substitute_path_parameters("/users/<id>", [{"name": "id", "in": "path"}], {"id": 123}) == "/users/123"
+    assert req._substitute_path_parameters("/users/{id}", [{"name": "id", "in": "path"}], {"id": r"\u003Cscript\u003E"}) == r"/users/\u003Cscript\u003E"
 
 def test_generate_query_string():
     args = get_default_args()
