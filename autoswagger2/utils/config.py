@@ -32,6 +32,11 @@ SWAGGER_UI_PATHS = sorted({
     "/v3.1/api-docs/ui", "/v3.1/swagger-ui.html",
     "/api/v3.1/swagger-ui.html", "/openapi3.1/swagger-ui.html",
     "/api/openapi3.1/swagger-ui.html", "/docs/openapi3.1/ui",
+    # Paths from swagger-wordlist.txt & SecLists
+    "/api", "/api-docs", "/api/docs", "/api/documentation", "/api/documentation/", "/api/help", "/api/help/",
+    "/api-reference", "/api-reference/", "/api/spec", "/api-docs/index.html", "/apidocs/index.html",
+    "/api/apidocs/index.html", "/api/swagger-ui/", "/api/swagger-ui/index.html", "/.well-known/openapi.html",
+    "/swagger-resources", "/api-docs.html", "/api-docs/api-docs",
 })
 
 DIRECT_SPEC_PATHS = sorted({
@@ -71,6 +76,13 @@ DIRECT_SPEC_PATHS = sorted({
     "/swagger-ui-init.js", "/swagger-ui/swagger-ui-init.js", "/swagger/swagger-ui-init.js",
     "/api/swagger-ui-init.js", "/api/docs/swagger-ui-init.js", "/api/v1/docs/swagger-ui-init.js",
     "/docs/swagger-ui-init.js", "/v1/docs/swagger-ui-init.js",
+    # Paths from swagger-wordlist.txt & SecLists
+    "/api/api-docs/swagger.json", "/api/apidocs/swagger.json", "/api/api-docs/swagger.yaml", "/api/apidocs/swagger.yaml", "/api/doc.json",
+    "/.well-known/openapi.json", "/.well-known/openapi.yaml", "/api-docs.json", "/api-docs.yaml", "/api-docs.yml",
+    "/api.json", "/api.yaml", "/api.yml", "/api/v1/api-docs", "/api/v2/api-docs", "/api/v3/api-docs",
+    "/api/v1/openapi.json", "/api/v2/openapi.json", "/api/v1/openapi.yaml", "/api/v2/openapi.yaml",
+    "/api/v1/swagger.json", "/api/v2/swagger.json", "/api/v1/swagger.yaml", "/api/v2/swagger.yaml",
+    "/api-docs/api-docs.json", "/api-merged.json",
 })
 
 # --- IMPROVEMENT: More creative and comprehensive test values ---
