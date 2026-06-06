@@ -29,7 +29,7 @@ class BolaTester:
 
             # 1. Send baseline request
             baseline_url, baseline_response = self._send_request(method, api_base_url, base_path, path, bola_param, bola_id)
-            if not baseline_response:
+            if baseline_response is None:
                 if not self.args.product:
                     log(f"BOLA: Baseline request for ID '{bola_id}' failed (no response). Skipping.", level="WARNING")
                 continue
