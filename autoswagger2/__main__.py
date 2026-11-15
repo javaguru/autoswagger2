@@ -7,18 +7,20 @@ import os
 import logging
 from datetime import datetime
 import requests
+from requests.adapters import HTTPAdapter
 import urllib3
 
 from .core.scanner import Scanner
 from .utils.helpers import print_banner
 from .utils.config import __version__
+from .utils.rate_limiter import get_rate_limiter
 
-# The session object is created here once and passed down.
+# The session object is created per run and exposed for compatibility.
 session = requests.Session()
 
-def run():
-    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
+def run():
+    global session
     parser = argparse.ArgumentParser(
         prog='autoswagger2',
         description="AutoSwagger2: Detect unauthenticated access control issues via Swagger2/OpenAPI documentation.",
@@ -31,6 +33,7 @@ def run():
     parser.add_argument("-V", "--version", action="version", version=f'%(prog)s {__version__}')
     parser.add_argument("-v", "--verbose", action="store_true", help="Enable verbose output")
     parser.add_argument("-rate", type=int, default=30, help="Set the rate limit in requests per second (default: 30). Use 0 to disable rate limiting.")
+    parser.add_argument("-k", "--insecure", action="store_true", help="Disable SSL/TLS certificate verification.")
 
     # NEW: OpenAPI Version Option
     parser.add_argument(
@@ -48,6 +51,10 @@ def run():
     scan_group.add_argument("--test-bfla", action="store_true", help="Test for Broken Function Level Authorization (BFLA). Requires an auth header.")
     scan_group.add_argument("--test-bopla", action="store_true", help="Test for Broken Object Property Level Authorization (BOPLA).")
     scan_group.add_argument("--test-urc", action="store_true", help="Test for Unrestricted Resource Consumption (DoS).")
+    scan_group.add_argument("--allow-external", action="store_true", help="Allow following cross-origin spec and webhook URLs (authentication headers are never sent cross-origin).")
+    scan_group.add_argument("-t", "--threads", type=int, default=20, help="Maximum concurrent worker threads (default: 20, max: 100).")
+    scan_group.add_argument("--no-cache", action="store_true", help="Disable specification disk cache reading and writing.")
+    scan_group.add_argument("--cache-ttl", type=int, default=3600, help="Specification cache TTL in seconds (default: 3600).")
 
 
     # Authentication Options
@@ -61,7 +68,7 @@ def run():
 
     # BOLA Testing Options
     bola_group = parser.add_argument_group('BOLA Testing')
-    bola_group.add_argument("--bola", action="store_true", help="Enable BOLA testing mode.")
+    bola_group.add_argument("--bola", "--test-bola", dest="bola", action="store_true", help="Enable BOLA testing mode.")
     bola_group.add_argument("--bola-id", metavar='"param=id"', help="Parameter name and your ID for BOLA baseline (e.g., \"userId=123\").")
 
     # Output Options
@@ -76,6 +83,8 @@ def run():
     output_group.add_argument("-severity", choices=["critical", "high", "medium", "low"], help="Filter results by minimum severity level (critical, high, medium, low).")
 
     args = parser.parse_args()
+    args.threads = max(1, min(100, args.threads))
+    args.cache_ttl = max(0, args.cache_ttl)
 
     if not args.urls and not sys.stdin.isatty():
         urls = [line.strip() for line in sys.stdin if line.strip()]
@@ -89,30 +98,39 @@ def run():
 
     # Set up file logging if verbose is enabled
     if args.verbose:
-        log_dir = os.path.expanduser("~/.autoswagger/logs")
-        os.makedirs(log_dir, exist_ok=True)
-        log_filename = datetime.now().strftime("%Y-%m-%d_%H-%M-%S-log.txt")
-        log_file_path = os.path.join(log_dir, log_filename)
-        file_handler = logging.FileHandler(log_file_path, encoding='utf-8')
-        file_handler.setLevel(logging.DEBUG)
-        formatter = logging.Formatter("%(message)s")
-        file_handler.setFormatter(formatter)
-
         logger = logging.getLogger("autoswagger")
-        logger.addHandler(file_handler)
+        if not any(isinstance(h, logging.FileHandler) for h in logger.handlers):
+            log_dir = os.path.expanduser("~/.autoswagger/logs")
+            os.makedirs(log_dir, exist_ok=True)
+            log_filename = datetime.now().strftime("%Y-%m-%d_%H-%M-%S-log.txt")
+            log_file_path = os.path.join(log_dir, log_filename)
+            file_handler = logging.FileHandler(log_file_path, encoding='utf-8')
+            file_handler.setLevel(logging.DEBUG)
+            formatter = logging.Formatter("%(message)s")
+            file_handler.setFormatter(formatter)
+            logger.addHandler(file_handler)
         logger.propagate = False
 
-    # Configure the global session object
+    if args.insecure:
+        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+    # Configure a fresh session object per run with bounded connection pooling
+    req_session = requests.Session()
+    pool_size = max(20, args.threads)
+    adapter = HTTPAdapter(pool_connections=pool_size, pool_maxsize=pool_size)
+    req_session.mount("http://", adapter)
+    req_session.mount("https://", adapter)
+    session = req_session
     user_agent = args.user_agent if args.user_agent else f'AutoSwagger2/{__version__}'
-    session.headers.update({'User-Agent': user_agent})
-    session.verify = False
+    req_session.headers.update({'User-Agent': user_agent})
+    req_session.verify = not args.insecure
 
     # Apply custom headers from -H / --header
     if args.header:
         for h in args.header:
             if ':' in h:
                 name, val = h.split(':', 1)
-                session.headers[name.strip()] = val.strip()
+                req_session.headers[name.strip()] = val.strip()
 
     # Apply API Key authentication
     api_key_val = None
@@ -129,10 +147,11 @@ def run():
     if api_key_val:
         header_name = args.key_header or "Authorization"
         prefix = args.key_prefix if args.key_prefix is not None else "Bearer "
-        session.headers[header_name] = f"{prefix}{api_key_val}"
+        req_session.headers[header_name] = f"{prefix}{api_key_val}"
 
-    # Pass the configured session to the Scanner
-    scanner = Scanner(urls, args, session)
+    # Initialize global rate limiter on args and launch the Scanner
+    get_rate_limiter(args)
+    scanner = Scanner(urls, args, req_session)
     scanner.run()
 
 if __name__ == '__main__':

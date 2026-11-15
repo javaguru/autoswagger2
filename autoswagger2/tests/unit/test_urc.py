@@ -111,3 +111,39 @@ def test_run_tests_vulnerable(monkeypatch):
     assert results[0]['url_template'] == '/users'
     assert results[0]['parameter'] == 'limit'
     assert results[0]['vulnerable'] is True
+
+
+def test_urc_baseline_prevents_false_positive_and_substitutes_path(monkeypatch):
+    args = argparse.Namespace(verbose=False, product=True)
+    session = requests.Session()
+    tester = UrcTester(args, session)
+
+    spec = {
+        'paths': {
+            '/orgs/{orgId}/items': {
+                'get': {
+                    'parameters': [{'name': 'limit', 'in': 'query'}]
+                }
+            }
+        }
+    }
+
+    called_urls = []
+
+    def mock_request(method, url, **kwargs):
+        called_urls.append(url)
+        resp = MagicMock()
+        resp.status_code = 200
+        # Naturally large ~600KB response regardless of limit=1 or limit=999999
+        resp.content = b"X" * 600000
+        return resp
+
+    monkeypatch.setattr(session, "request", mock_request)
+
+    results = tester.run_tests(spec, "http://localhost:8080", "/")
+    assert called_urls == [
+        "http://localhost:8080/orgs/1/items?limit=1",
+        "http://localhost:8080/orgs/1/items?limit=999999",
+    ]
+    assert len(results) == 1
+    assert results[0]['vulnerable'] is False

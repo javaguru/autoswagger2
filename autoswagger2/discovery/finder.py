@@ -5,10 +5,18 @@ import requests
 import yaml
 import json
 import re
+import threading
 from urllib.parse import urljoin, urlparse
-from ..utils.helpers import log
+from ..utils.helpers import (
+    log,
+    is_quiet_output,
+    is_same_origin_host,
+    build_cross_origin_safe_headers,
+)
 from ..utils.config import SWAGGER_UI_PATHS, DIRECT_SPEC_PATHS
 from ..utils.cache import SpecCache
+from ..utils.rate_limiter import get_rate_limiter
+
 
 class SpecFinder:
     def __init__(self, base_url, args, session):
@@ -16,7 +24,52 @@ class SpecFinder:
         self.args = args
         self.session = session
         self.TIMEOUT = 10
-        self.cache = SpecCache()
+        self._lock = threading.Lock()
+        self.TOTAL_REQUESTS = 0
+        no_cache = getattr(args, "no_cache", False) is True
+        raw_ttl = getattr(args, "cache_ttl", 3600)
+        cache_ttl = (
+            raw_ttl
+            if raw_ttl is None or (isinstance(raw_ttl, (int, float)) and not isinstance(raw_ttl, bool))
+            else 3600
+        )
+        self.cache = SpecCache(ttl=cache_ttl, enabled=not no_cache)
+
+    def _safe_get(self, url, follow_redirects=False, max_redirects=5):
+        """
+        Executes a GET request while enforcing same-origin checks and stripping
+        credentials when --allow-external permits cross-origin requests.
+        """
+        current_url = url
+        for _ in range(max_redirects + 1):
+            same_origin = is_same_origin_host(self.base_url, current_url)
+            if not same_origin and not getattr(self.args, "allow_external", False):
+                if getattr(self.args, "verbose", False):
+                    log(f"Blocked cross-origin request to {current_url}", level="WARNING")
+                return None
+
+            kwargs = {"timeout": self.TIMEOUT, "allow_redirects": False}
+            if not same_origin:
+                safe_headers = build_cross_origin_safe_headers(self.session)
+                if safe_headers:
+                    kwargs["headers"] = safe_headers
+
+            get_rate_limiter(self.args).wait()
+            with self._lock:
+                self.TOTAL_REQUESTS += 1
+            resp = self.session.get(current_url, **kwargs)
+            headers = getattr(resp, "headers", None)
+            if (
+                follow_redirects
+                and getattr(resp, "status_code", None) in (301, 302, 303, 307, 308)
+                and hasattr(headers, "get")
+            ):
+                location = headers.get("Location") or headers.get("location")
+                if isinstance(location, str) and location:
+                    current_url = urljoin(current_url, location)
+                    continue
+            return resp
+        return None
 
     def find(self):
         """
@@ -25,20 +78,20 @@ class SpecFinder:
         parsed_input_url = urlparse(self.base_url)
 
         # Phase 1: Direct URL Analysis
-        if not self.args.product:
+        if not is_quiet_output(self.args):
             log(f"Attempting to fetch spec directly from provided URL: {self.base_url}", level="INFO")
         swagger_spec = self._fetch_swagger_spec(self.base_url)
         if swagger_spec:
             return swagger_spec, self.base_url
 
-        if not self.args.product:
+        if not is_quiet_output(self.args):
             log(f"Provided URL is not a spec file. Attempting to parse as a Swagger UI page...", level="INFO")
         swagger_spec, spec_url = self._parse_swagger_ui_page(self.base_url)
         if swagger_spec:
             return swagger_spec, spec_url
 
         # Phase 2: Context-Aware Discovery
-        if not self.args.product:
+        if not is_quiet_output(self.args):
             log(f"Could not find spec from provided URL. Starting discovery within path: {parsed_input_url.path}", level="INFO")
         swagger_spec, spec_url = self._discover_from_base(self.base_url)
         if swagger_spec:
@@ -47,7 +100,7 @@ class SpecFinder:
         # Phase 3: Root Fallback Discovery
         discovery_root_url = f"{parsed_input_url.scheme}://{parsed_input_url.netloc}"
         if self.base_url.rstrip('/') != discovery_root_url:
-            if not self.args.product:
+            if not is_quiet_output(self.args):
                 log(f"Discovery within path failed. Falling back to discovery from server root...", level="INFO")
             swagger_spec, spec_url = self._discover_from_base(discovery_root_url)
             if swagger_spec:
@@ -77,13 +130,18 @@ class SpecFinder:
                 log(f"Attempting to fetch spec from direct path: {current_spec_url}", level="DEBUG")
             spec = self._fetch_swagger_spec(current_spec_url)
             if spec:
-                if not self.args.product:
+                if not is_quiet_output(self.args):
                     log(f"Spec identified via direct path detection: {current_spec_url}", level="INFO")
                 return spec, current_spec_url
 
         return None, None
 
     def _fetch_swagger_spec(self, url, is_recursive_call=False):
+        if not is_same_origin_host(self.base_url, url) and not getattr(self.args, "allow_external", False):
+            if getattr(self.args, "verbose", False):
+                log(f"Blocked cross-origin spec fetch: {url}", level="WARNING")
+            return None
+
         cached_spec = self.cache.get_cached_spec(url)
         if cached_spec:
             if self.args.verbose:
@@ -93,7 +151,9 @@ class SpecFinder:
         if self.args.verbose:
             log(f"Fetching Swagger/OpenAPI spec from {url}", level="DEBUG")
         try:
-            resp = self.session.get(url, timeout=self.TIMEOUT)
+            resp = self._safe_get(url, follow_redirects=True)
+            if resp is None:
+                return None
             if resp.status_code != 200:
                 if self.args.verbose:
                     ctype = resp.headers.get('Content-Type', '').lower()
@@ -234,8 +294,8 @@ class SpecFinder:
         if self.args.verbose:
             log(f"Parsing potential Swagger UI page: {page_url}", level="DEBUG")
         try:
-            r = self.session.get(page_url, allow_redirects=True, timeout=self.TIMEOUT)
-            if r.status_code == 200 and ('swagger' in r.text.lower() or 'openapi' in r.text.lower()):
+            r = self._safe_get(page_url, follow_redirects=True)
+            if r is not None and r.status_code == 200 and ('swagger' in r.text.lower() or 'openapi' in r.text.lower()):
                 if self.args.verbose:
                     log(f"Content at {page_url} looks like a Swagger UI page.", level="DEBUG")
 
@@ -243,8 +303,8 @@ class SpecFinder:
                 for jsf in js_files:
                     jsu = urljoin(page_url, jsf)
                     try:
-                        js_resp = self.session.get(jsu, timeout=self.TIMEOUT)
-                        if js_resp.status_code == 200:
+                        js_resp = self._safe_get(jsu, follow_redirects=True)
+                        if js_resp is not None and js_resp.status_code == 200:
                             spec, spec_url = self._extract_spec_from_content(js_resp.text, jsu)
                             if spec:
                                 return spec, spec_url

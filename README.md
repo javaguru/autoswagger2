@@ -37,29 +37,31 @@ This software is provided "as is," without warranty of any kind, express or impl
 
 ## Key Features
 
-* **Advanced Specification Discovery:** Employs a multi-phase discovery process that includes direct parsing, intelligent analysis of Swagger UI pages, and context-aware path bruteforcing, ensuring compatibility with modern frameworks such as Spring Boot. **New:** An intelligent caching system prevents duplicate requests during complex discovery phases.
+* **Advanced Specification Discovery:** Employs a multi-phase discovery process (direct parsing, Swagger UI HTML and JavaScript resource inspection, context-aware path probing, and root fallback), ensuring compatibility with modern frameworks such as Spring Boot. Includes an **atomic SHA-256 disk cache** with configurable TTL (`--cache-ttl`, default `3600s`) and explicit bypass (`--no-cache`).
 
-* **Extensive OpenAPI Support:** Precise version detection (e.g., 3.0.4, 3.1) and native support for testing OpenAPI 3.1 Webhooks (safely skipping unresolved runtime expressions).
+* **Extensive OpenAPI Support:** Precise version detection (Swagger 2.0, OpenAPI 3.0.x, OpenAPI 3.1), **recursive `$ref` resolution with cycle detection**, `allOf` / `oneOf` / `anyOf` schema composition, OpenAPI 3.1 type arrays (e.g., `["string", "null"]`), `servers` template variable expansion, path/operation parameter merging, `multipart/form-data` payloads, and native support for OpenAPI 3.1 Webhooks (safely skipping unresolved runtime expressions).
 
 * **Comprehensive Security Testing:**
 
-    * **PII & Secret Detection:** Scans API responses for a wide range of secrets (e.g., API keys, JWTs) and Personally Identifiable Information types. **New:** Advanced detection patterns for JWTs (with automatic signature masking to prevent credential leakage in reports), Asymmetric Keys (RSA, ed25519), and Generic API Keys. Also implements **Sensitive Parameter Detection** to identify credentials, keys, financial data, or PII exposed in query/path parameters (CWE-598).
+    * **PII & Secret Detection:** Uses a calibrated **Presidio** NLP/regex pipeline (case-sensitive patterns, compact-JSON context validation, generic-label filtering, and longest-span overlap deduplication) combined with **TruffleHog-inspired patterns** covering JWTs (with automatic signature masking), Asymmetric Keys (RSA, ed25519), cloud/payment API keys (AWS, Stripe, Google, OpenAI, GitHub, generic JSON `"apikey"` fields), and database/JDBC connection URIs. Also performs **Sensitive Parameter Detection** (CWE-598) and passive LFI/SQL/XSS response anomaly checks.
 
-    * **Authorization & Resource Testing:** Automates tests for access control and denial of service issues:
-        * **BOLA (Broken Object Level Authorization):** Checks if users can access resources belonging to others.
-        * **BFLA (Broken Function Level Authorization):** Checks if users can access administrative or privileged functions.
-        * **BOPLA (Broken Object Property Level Authorization):** Checks if users can modify sensitive object properties (e.g., changing their role to "admin").
-        * **URC (Unrestricted Resource Consumption):** Checks if pagination or count parameters fail to validate boundaries, leading to potential Denial of Service (DoS) vectors.
+    * **Authorization & Resource Testing:** Differential, baseline-aware checks respecting read-only mode by default (`POST`/`PUT`/`PATCH`/`DELETE` require `-risk`):
+        * **BOLA (`--bola` / `--test-bola`):** Compares neighbor IDs (integers, prefixed/suffixed IDs, UUIDs, MongoDB ObjectIDs) against a verified baseline while ignoring error envelopes.
+        * **BFLA (`--test-bfla`):** Probes administrative paths (`admin`, `management`, `internal`, `config`, `actuator`, etc.) while filtering soft-200 error responses.
+        * **BOPLA (`--test-bopla`):** Injects privileged JSON properties (e.g., `"isAdmin": true`, `"role": "admin"`) into `POST`/`PUT`/`PATCH` schema-generated bodies.
+        * **URC (`--test-urc`):** Evaluates pagination boundaries (`limit`, `size`, `page`, etc.) by comparing extreme values against a normal baseline request for latency spikes or oversized responses.
 
-    * **Dynamic Payload Generation:** Utilizes a comprehensive set of test vectors to probe for common vulnerability classes, including SQL Injection, NoSQL Injection, Cross-Site Scripting (XSS), and Command Injection.
+    * **Dynamic Parameter Probing:** Populates path, query, header, and body parameters from OpenAPI schemas and `TEST_VALUES` payloads, using a linear `O(N)` parameter strategy in brute-force mode (`-b`) to avoid exponential request explosions.
 
-    * **Debug Information Analysis:** Identifies server misconfigurations by detecting stack traces, verbose error messages, and exposed environment variables.
+    * **Debug Information Analysis:** Identifies server misconfigurations by detecting stack traces, database error messages, and exposed environment variables while minimizing generic JSON noise.
 
-* **Support for Authenticated Scanning:** Facilitates testing of endpoints with or without authentication. Credentials can be supplied via generic custom headers or through user-friendly flags designed for common token-based authentication schemes.
+* **Security-by-Default Transport & Origin Policy:** TLS certificate verification is enforced by default (use `-k` / `--insecure` explicitly for self-signed dev/staging certs). Redirects and cross-origin spec/webhook URLs are blocked by default under a strict Same-Origin policy; enabling `--allow-external` permits cross-origin fetches while automatically stripping `Authorization`, `Cookie`, and API key headers. HTML and CSV reports escape untrusted output and spreadsheet formulas.
 
-* **Structured Reporting:** Presents findings in either a formatted, human-readable table or a structured JSON format suitable for automated processing. **New:** Intelligent filtering by risk allows you to filter the output by severity (`-severity critical|high|medium|low`).
+* **Support for Authenticated Scanning:** Credentials can be supplied via custom headers (`-H` / `--header`), `--api-key`, or `--api-key-src` (reading long tokens from a file).
 
-* **Robust and Configurable Operation:** The tool is multi-threaded for performance, supports rate limiting to prevent service disruption, and implements **automatic retries with exponential backoff** to handle connection errors and timeouts against unstable APIs.
+* **Structured Reporting:** Presents findings in Rich console tables, JSON (`-json` / `-product`), CSV (`-csv`), SARIF (`-sarif`), or HTML (`-html`), with severity filtering (`-severity critical|high|medium|low`) and runtime statistics (`-stats`).
+
+* **High-Performance Concurrency & Rate Limiting:** Lazy thread-safe SpaCy/Presidio engine singleton, bounded `HTTPAdapter` connection pooling, URL-to-endpoint thread budget splitting (`-t` / `--threads`, default `20`, max `100`), a thread-safe global rate limiter (`-rate`, default `30` req/s), and automatic retries with exponential backoff.
 
 ## Installation & Usage
 
@@ -70,31 +72,49 @@ This software is provided "as is," without warranty of any kind, express or impl
    cd autoswagger2
    ```
 
-2. **Install dependencies** (Python 3.12+ is recommended):
+2. **Install dependencies** (Python 3.10+ / 3.12+ recommended; `requirements.txt` includes the SpaCy `en_core_web_lg` model):
 
    ```bash
-   # Utilization of a virtual environment is considered best practice.
    python -m venv venv
+
+   # Linux / macOS
    source venv/bin/activate
-   
+
+   # Windows (PowerShell)
+   .\venv\Scripts\Activate.ps1
+
    pip install -r requirements.txt
+   ```
+
+   *(Optional — for contributors / running the test suite from the repository root)*:
+
+   ```bash
+   pip install -r autoswagger2/tests/requirements-dev.txt
+   python -m pytest
    ```
 
 3. **Execute the tool:**
 
    ```bash
-   # Display the   help message for a full list of options.
+   # Display the help message for a full list of options.
    python -m autoswagger2 -h
-   
-   # Execute a standard scan against a target URL.
-   python -m autoswagger2 https://api.example.com
+
+   # Execute a safe read-only scan against a target URL.
+   python -m autoswagger2 https://api.example.com -stats
    ```
 
 ## Options
 
-```
-usage: autoswagger2 [-h] [-V] [-v] [-rate RATE] [--openapi-version OPENAPI_VERSION] [-risk] [-all] [-b] [--test-bfla] [--test-bopla] [--test-urc] [-H ] [--api-key ] [--api-key-src ] [--key-header ] [--key-prefix ]
-                    [--bola] [--bola-id "param=id"] [-product] [-stats] [-json] [-csv] [-sarif] [-html] [--out FILE] [-severity {critical,high,medium,low}]
+```text
+usage: autoswagger2 [-h] [-V] [-v] [-rate RATE] [-k]
+                    [--openapi-version OPENAPI_VERSION] [-risk] [-all] [-b]
+                    [--test-bfla] [--test-bopla] [--test-urc]
+                    [--allow-external] [-t THREADS] [--no-cache]
+                    [--cache-ttl CACHE_TTL] [-H] [--api-key] [--api-key-src]
+                    [--key-header] [--key-prefix] [--user-agent UA] [--bola]
+                    [--bola-id "param=id"] [-product] [-stats] [-json] [-csv]
+                    [-sarif] [-html] [--out FILE]
+                    [-severity {critical,high,medium,low}]
                     [urls ...]
 
 AutoSwagger2: Detect unauthenticated access control issues via Swagger2/OpenAPI documentation.
@@ -106,8 +126,10 @@ options:
   -h, --help            show this help message and exit
   -V, --version         show program's version number and exit
   -v, --verbose         Enable verbose output
-  -rate RATE            Set the limit of requests per second (default: 30). Use 0 to disable rate limiting.
-  --openapi-version     Force OpenAPI version detection (e.g. 2.0, 3.0.1, 3.0.4, 3.1). If not specified, auto-detect.
+  -rate RATE            Set the rate limit in requests per second (default: 30). Use 0 to disable rate limiting.
+  -k, --insecure        Disable SSL/TLS certificate verification.
+  --openapi-version OPENAPI_VERSION
+                        Force OpenAPI version detection (e.g. 2.0, 3.0.1, 3.0.4, 3.1). If not specified, auto-detect.
 
 Scan Behavior:
   -risk                 Include non-GET requests in testing
@@ -116,9 +138,15 @@ Scan Behavior:
   --test-bfla           Test for Broken Function Level Authorization (BFLA). Requires an auth header.
   --test-bopla          Test for Broken Object Property Level Authorization (BOPLA).
   --test-urc            Test for Unrestricted Resource Consumption (DoS).
+  --allow-external      Allow following cross-origin spec and webhook URLs (authentication headers are never sent cross-origin).
+  -t THREADS, --threads THREADS
+                        Maximum concurrent worker threads (default: 20, max: 100).
+  --no-cache            Disable specification disk cache reading and writing.
+  --cache-ttl CACHE_TTL
+                        Specification cache TTL in seconds (default: 3600).
 
 Authentication:
-  -H, --header          Add a custom Key:Value header to all requests (e.g., "Authorization: Bearer ...")
+  -H , --header         Add a custom Key:Value header to all requests (e.g., "Authorization: Bearer ...")
   --api-key             API key/token for authentication.
   --api-key-src         File containing the API key/token (useful for long tokens).
   --key-header          Header name for the API key/token (default: Authorization).
@@ -126,7 +154,7 @@ Authentication:
   --user-agent UA       Specify a custom User-Agent header for all requests.
 
 BOLA Testing:
-  --bola                Enable BOLA testing mode.
+  --bola, --test-bola   Enable BOLA testing mode.
   --bola-id "param=id"  Parameter name and your ID for BOLA baseline (e.g., "userId=123").
 
 Output:
@@ -137,7 +165,8 @@ Output:
   -sarif                Output results in SARIF format.
   -html                 Output results in HTML format.
   --out FILE            Save output to file (used with -csv, -sarif, -html).
-  -severity             Filter results by minimum severity level (critical, high, medium, low).
+  -severity {critical,high,medium,low}
+                        Filter results by minimum severity level (critical, high, medium, low).
 ```
 
 ## Discovery Phases
@@ -173,45 +202,49 @@ The discovery process concludes upon the successful parsing of a valid OpenAPI s
 Upon successful parsing of a specification, the utility initiates a systematic testing protocol for each defined endpoint.
 
 1. **Endpoint Collection**
-   Every path and method defined under the `paths` object in the specification is extracted for testing.
+   Every path and method defined under `paths` (and `webhooks` in OpenAPI 3.1) is extracted, resolving `$ref` pointers (including nested and cyclic references) and `allOf` / `oneOf` / `anyOf` compositions.
 
 2. **HTTP Method Selection**
 
-    * By default, only `GET` requests are dispatched to ensure a safe, read-only scan.
+    * By default, only safe read-only methods (`GET`, `HEAD`, `OPTIONS`) are dispatched.
 
-    * The `-risk` flag enables testing of `POST`, `PUT`, `PATCH`, and `DELETE` methods, which are capable of modifying application state.
+    * The `-risk` flag enables testing of state-changing methods (`POST`, `PUT`, `PATCH`, `DELETE`).
 
-3. **Authentication**
+3. **Authentication, TLS & Same-Origin Policy**
 
-    * **Unauthenticated (Default):** Requests are sent without authentication credentials to identify publicly exposed endpoints.
+    * **TLS Verification:** Certificate verification is enabled by default (`verify=True`). Use `-k` / `--insecure` explicitly when auditing local or staging targets with self-signed certificates.
 
-    * **Authenticated (Optional):** Authentication credentials may be provided via command-line arguments. These credentials will be included in all subsequent requests to assess endpoints protected by authentication.
+    * **Same-Origin Protection:** Cross-origin redirects and remote `servers` / webhook URLs are blocked by default. Adding `--allow-external` allows following external URLs while automatically stripping sensitive headers (`Authorization`, `Cookie`, API keys) whenever a request leaves the target origin.
 
-        * `-H` / `--header`: For any generic header (e.g., `Authorization: Bearer <token>`). This option may be specified multiple times.
+    * **Authenticated (Optional):** Credentials may be provided via command-line arguments:
 
-        * `--api-key`: A user-friendly shortcut for common token-based authentication schemes.
+        * `-H` / `--header`: For any custom header (e.g., `Authorization: Bearer <token>`). Can be specified multiple times.
 
-        * `--user-agent`: Specific shortcut to set a custom User-Agent string.
+        * `--api-key` / `--api-key-src`: Supply a bearer token or custom header key (`--key-header`, `--key-prefix`) inline or from a file.
+
+        * `--user-agent`: Specify a custom User-Agent string.
 
 4. **Parameter & Body Generation**
 
-    * **Path & Query Parameters:** URL path and query string parameters are populated using a comprehensive list of test values.
+    * **Path & Query Parameters:** URL path and query string parameters are populated from OpenAPI `enum`s, schema types (including OpenAPI 3.1 type arrays such as `["string", "null"]`), and `TEST_VALUES`.
 
-    * **Request Bodies:** For methods such as `POST` and `PUT`, valid request bodies are automatically constructed based on the API's schema, utilizing security-focused payloads from the `TEST_VALUES` dictionary.
+    * **Request Bodies:** For methods such as `POST` and `PUT`, request bodies are generated from resolved JSON or `multipart/form-data` schemas.
 
-    * **Brute-Force Mode (`-b`):** When enabled, this option significantly increases testing depth by attempting numerous values and types for each parameter.
+    * **Brute-Force Mode (`-b` / `--brute`):** Uses a linear One-Parameter-At-A-Time strategy (`O(1 + sum(len(V_i) - 1))`) so endpoints with many parameters remain fast while every value variant is covered.
 
-5. **Rate Limiting & Concurrency**
+5. **Concurrency, Caching & Rate Limiting**
 
-    * Tests are executed concurrently using multiple threads to optimize performance.
+    * **Bounded Threads (`-t` / `--threads`):** Controls total concurrency (default `20`, max `100`), automatically splitting worker budgets across multiple URLs and sizing the HTTP connection pool accordingly.
 
-    * The `-rate` option controls the maximum number of requests per second to prevent service degradation on the target API.
+    * **Global Rate Limiter (`-rate`):** Uses a thread-safe slot-reservation limiter across discovery, endpoint probing, and BOLA/BFLA/BOPLA/URC modules (default `30` req/s; `0` disables).
+
+    * **Discovery Cache (`--no-cache`, `--cache-ttl`):** Caches validated specifications using SHA-256 keys and atomic writes with a `3600s` default TTL. Pass `--no-cache` to bypass disk caching.
 
 6. **Response Analysis**
 
-    * Each response is analyzed based on its status code, content length, and content type.
+    * Each response is evaluated by status code, content length, content type, and passive vulnerability indicators (LFI, SQL errors, reflected XSS).
 
-    * Text-based responses undergo scanning for PII, secrets (utilizing TruffleHog patterns), and common debug messages to identify potential information leaks.
+    * Text-based responses undergo calibrated PII (Presidio), secret (TruffleHog regexes + JDBC/API key patterns), and debug info analysis.
 
 ## BOLA Testing
 
@@ -219,16 +252,16 @@ Upon successful parsing of a specification, the utility initiates a systematic t
 
 ### How it Works
 
-1.  **Activation:** The test is enabled by using the `--bola` flag in conjunction with an authentication header (`-H`) and the user's own object ID (`--bola-id`).
-2.  **Target Identification:** The tool automatically identifies all endpoints in the specification that use the specified object ID as a path parameter (e.g., `/api/users/{userId}/profile`).
-3.  **Baseline Request:** It sends a request with the user's own ID to establish a "normal" successful response (baseline).
-4.  **Attack Phase:** It automatically detects the format of the baseline ID provided in `--bola-id` and generates corresponding "neighbor" or random attack IDs:
-    *   **Integers:** If the ID is a pure integer (e.g., `123`), it tests adjacent numbers (e.g., `122`, `124`).
-    *   **UUIDs:** If the ID matches a UUID pattern (e.g., `123e4567-e89b-12d3-a456-426614174000`), it generates adjacent hex values (e.g., `...3fff`, `...4001`) and a completely random UUIDv4.
-    *   **MongoDB ObjectIDs:** If the ID is a 24-character hexadecimal MongoDB ObjectID (e.g., `507f1f77bcf86cd799439011`), it generates neighbors by incrementing/decrementing the trailing segment (e.g., `...9010`, `...9012`).
-    *   **Prefixed/Suffixed Integers:** If the ID is an integer embedded in text (e.g., `usr-123` or `id_99_suffix`), it increments/decrements the integer part while keeping the prefix and suffix intact (e.g., `usr-122`, `usr-124`).
-    *   **Fallback Strings:** If it is a generic string, it attempts common administrative/default fallback values (e.g., `admin`, `guest`, `root`, `user`, `test`).
-5.  **Verification:** A BOLA vulnerability is flagged if a request for a neighbor's resource returns a successful status code (200 OK) and a response body of a similar size to the baseline.
+1.  **Activation:** Enable with `--bola` (or `--test-bola`) alongside authentication headers (`-H`) and the user's own object ID (`--bola-id "param=id"`).
+2.  **Target Identification:** Identifies all endpoints in the specification that use the specified object ID path parameter (e.g., `/api/users/{userId}/profile`). Only safe HTTP methods are probed unless `-risk` is specified.
+3.  **Baseline Request:** Sends a request with the user's own ID to establish a verified successful baseline (status, structure, and length).
+4.  **Attack Phase:** Detects the baseline ID format and generates neighbor or fallback IDs:
+    *   **Integers:** Adjacent numbers (e.g., `122`, `124` for `123`).
+    *   **UUIDs:** Adjacent hex values and a random UUIDv4.
+    *   **MongoDB ObjectIDs:** Incrementing/decrementing the trailing segment of a 24-char hex ObjectID.
+    *   **Prefixed/Suffixed Integers:** Increments/decrements the embedded integer while preserving prefixes/suffixes (e.g., `usr-122`, `usr-124`).
+    *   **Fallback Strings:** Common administrative/default strings (e.g., `admin`, `guest`, `root`, `user`, `test`).
+5.  **Verification:** Flags BOLA only when the neighbor response succeeds without matching a soft-error envelope and shows matching status/structure similarity relative to the baseline.
 
 ### Example Usages
 
@@ -272,10 +305,10 @@ The results are displayed in a separate table at the end of the scan.
 
 ### How it Works
 
-1.  **Activation:** The test is enabled by using the `--test-bfla` flag in conjunction with an authentication header (`-H`) from a regular user.
-2.  **Target Identification:** The tool searches for endpoints with paths containing administrative keywords (e.g., `admin`, `management`, `internal`).
-3.  **Attack Phase:** It sends requests to these potentially privileged endpoints using the provided non-admin session.
-4.  **Verification:** A BFLA vulnerability is flagged if a request to an administrative endpoint returns a successful status code (2xx), indicating that the user was able to access a function they should not have been authorized for.
+1.  **Activation:** Enable with `--test-bfla` alongside a non-privileged user's authentication header (`-H`).
+2.  **Target Identification:** Matches path segments against privileged keywords (`admin`, `management`, `internal`, `debug`, `config`, `actuator`, `backoffice`, etc.) without false-triggering on prefixes like `/mock` or `/test` or substring collisions. Safe methods run by default; add `-risk` to include state-changing admin routes.
+3.  **Attack Phase:** Dispatches requests to candidate privileged routes with the non-admin session.
+4.  **Verification:** Flags BFLA when an administrative route returns a `2xx` status whose body is not an authorization/error JSON envelope.
 
 ### Example Usage
 
@@ -291,11 +324,11 @@ python -m autoswagger2 https://api.example.com \
 
 ### How it Works
 
-1.  **Activation:** The test is enabled by using the `--test-bopla` flag.
-2.  **Target Identification:** The tool identifies all `POST`, `PUT`, and `PATCH` endpoints that accept a JSON request body.
-3.  **Payload Generation:** For each target, it constructs a valid baseline request body based on the API specification.
-4.  **Attack Phase:** It then systematically injects sensitive key-value pairs (e.g., `"isAdmin": true`, `"role": "admin"`) into the baseline body and sends the modified request.
-5.  **Verification:** A BOPLA vulnerability is flagged if the server accepts the request with the injected property and returns a successful status code (2xx).
+1.  **Activation:** Enable with `--test-bopla` (explicitly tests body-bearing `POST`/`PUT`/`PATCH` endpoints when requested).
+2.  **Target Identification:** Identifies `POST`, `PUT`, and `PATCH` endpoints accepting JSON bodies (`application/json` or `+json`).
+3.  **Payload Generation:** Constructs a valid baseline body from the resolved OpenAPI schema.
+4.  **Attack Phase:** Injects privileged key-value pairs (e.g., `"isAdmin": true`, `"role": "admin"`) into the baseline payload.
+5.  **Verification:** Flags BOPLA when the server returns a `2xx` success response (excluding soft-error envelopes).
 
 ### Example Usage
 
@@ -305,14 +338,14 @@ python -m autoswagger2 https://api.example.com --test-bopla
 
 ## URC Testing
 
-`AutoSwagger2` can test for Unrestricted Resource Consumption (URC / API Rate Limiting and DoS vulnerabilities) by injecting extreme values into pagination and size parameters.
+`AutoSwagger2` can test for Unrestricted Resource Consumption (URC / DoS vulnerabilities) by injecting extreme values into pagination and size parameters.
 
 ### How it Works
 
-1.  **Activation:** The test is enabled by using the `--test-urc` flag.
-2.  **Target Identification:** The tool automatically identifies all `GET` endpoints in the specification that accept query parameters commonly associated with pagination or count (e.g., `limit`, `size`, `page`, `offset`, `max`, `count`).
-3.  **Attack Phase:** It dispatches requests with an extreme value (e.g., `999999`) to these parameters.
-4.  **Verification:** A URC vulnerability is flagged if the request triggers a severe response delay (exceeding 5 seconds), a server timeout, or returns a response size larger than 500 KB, indicating a failure to enforce pagination boundaries on the server side.
+1.  **Activation:** Enable with `--test-urc`.
+2.  **Target Identification:** Identifies `GET` endpoints accepting pagination or count query parameters (e.g., `limit`, `size`, `page`, `offset`, `max`, `count`).
+3.  **Baseline & Attack Phase:** Sends a small baseline request (`10`) first, then dispatches an extreme value (`999999`). Rate-limiter sleep time is strictly excluded from response latency measurements.
+4.  **Verification:** Flags URC if the extreme request triggers a timeout, significant latency inflation (`>= 5s` above baseline), or excessive payload growth (`> 500 KB` and significantly larger than baseline).
 
 ### Example Usage
 
@@ -320,46 +353,70 @@ python -m autoswagger2 https://api.example.com --test-bopla
 python -m autoswagger2 https://api.example.com --test-urc
 ```
 
-## 🛠️ Complete use case
+## 🛠️ Progressive Tutorial & Use Cases
 
-### Standard Scan + Stats
+### 1. Safe Read-Only Reconnaissance + Statistics
+
+Start with a non-destructive read-only scan (`GET` endpoints only) with runtime metrics enabled:
 
 ```bash
 python -m autoswagger2 https://api.example.com -v -stats
 ```
 
-### High Severity Scan + SARIF for CI/CD
+### 2. Local / Staging Audit (Fresh Spec Cache, Custom Rate & Threads)
+
+When iterating against a local or staging service (bypassing cached specs, tolerating self-signed dev TLS with `-k`, and keeping server load controlled):
 
 ```bash
-python -m autoswagger2 https://api.example.com \
--severity critical \
--sarif --out sarif-report.sarif
+python -m autoswagger2 https://localhost:8443/api \
+  --no-cache \
+  -k \
+  -t 10 \
+  -rate 15 \
+  -stats -v
 ```
 
-### Full Scan + All Tests + CSV
+### 3. Complete Authorized Security Audit (Endpoints + BOLA + BFLA + BOPLA + URC)
+
+Run all access-control and resource-consumption modules (including state-changing endpoints via `-risk`) and export to CSV:
 
 ```bash
 python -m autoswagger2 https://api.example.com \
--risk \
---test-bola --test-bfla --test-bopla --test-urc \
--csv --out full-report.csv
+  -H "Authorization: Bearer <your_token>" \
+  -risk \
+  --test-bola --bola-id "userId=123" \
+  --test-bfla \
+  --test-bopla \
+  --test-urc \
+  -stats \
+  -csv --out full-report.csv
 ```
 
-### Custom User-Agent + Proxy + OpenAPI 3.1
+*(Tip: use `--allow-external` only if the spec intentionally delegates endpoints or webhooks to trusted external hosts; credential headers remain stripped cross-origin.)*
+
+### 4. CI/CD Gate with SARIF & Severity Filtering
+
+Export critical/high findings in SARIF for GitHub Security Alerts or GitLab/IDE triage:
 
 ```bash
 python -m autoswagger2 https://api.example.com \
---user-agent "Mozilla/5.0 (X11; Linux x86_64)" \
---openapi-version 3.1 \
--html --out report.html
+  -severity critical \
+  -sarif --out sarif-report.sarif
 ```
 
-### JSON Filter High Only
+### 5. Interactive HTML Report or JSON Pipeline Filtering
 
 ```bash
+# Shareable HTML report (with OpenAPI version override and custom User-Agent)
 python -m autoswagger2 https://api.example.com \
--severity high \
--json | jq '.results[] | select(.pii_detected==true)'
+  --user-agent "SecurityAudit/2.0" \
+  --openapi-version 3.1 \
+  -html --out report.html
+
+# Filter high-confidence PII/Secret JSON findings with jq
+python -m autoswagger2 https://api.example.com \
+  -severity high \
+  -json | jq '.results[] | select(.pii_detected==true)'
 ```
 
 ## Response Analysis & Data Leakage Detection
@@ -382,13 +439,15 @@ The script actively searches for high-confidence indicators of sensitive data ex
 
     * Other Identifiers: Passport Numbers, IP/MAC Addresses, License Plates (FR/US)
 
-* **Secrets and Credentials:** It uses a comprehensive list of `TruffleHog`-inspired regular expressions to detect a wide range of secrets, including:
+* **Secrets and Credentials:** It uses a calibrated suite of `TruffleHog`-inspired regular expressions to detect exposed credentials, including:
 
-    * API Keys for various services (AWS, Google Cloud, Stripe, etc.)
+    * Cloud & Third-Party API Keys (AWS, Google Cloud, Stripe, OpenAI, GitHub, Slack, Discord) as well as generic `"apikey"` / `api_key` JSON and config entries
 
-    * JSON Web Tokens (JWT)
+    * Database Connection URIs (`postgresql://`, `mongodb://`, `mysql://`, `redis://`, `jdbc:postgresql://`, etc.)
 
-    * Private keys and credentials
+    * JSON Web Tokens (JWT) with automatic `[REDACTED]` signature masking in reports
+
+    * Private keys (RSA, DSA, EC, ed25519, PGP) and credentialed URLs
 
 Any finding in this category is considered a high-priority issue and is flagged under the **PII/Secret** column in the results table.
 
@@ -396,13 +455,13 @@ Any finding in this category is considered a high-priority issue and is flagged 
 
 The script also looks for red flags that might not be secrets themselves but often indicate a misconfiguration or a potential information leak:
 
-* **Debug Information:** It searches for common debug keywords (`ERROR`, `stacktrace`), environment variable names (`AWS_`, `env.`), and database error messages. These findings are flagged under the **Debug Info** column.
+* **Debug Information:** It searches for stack traces (`Traceback`, Java/JVM `at ...`, `NullPointerException`), SQL error signatures (`SQLSTATE`, `ORA-`, `SQLException`), and leaked environment variable identifiers (`env.*`, `AWS_*`, `AZURE_*`) while avoiding noise from generic JSON booleans like `"debug": false`. These findings are flagged under the **Debug Info** column.
 
-* **Large Responses:** As a heuristic, the script flags responses that are unusually large (e.g., containing over 100 JSON objects or exceeding 100k bytes). This can often indicate an endpoint that is leaking excessive data, such as returning the entire user database instead of a single record. These are marked as "interesting" in the JSON output.
+* **Large Responses:** As a heuristic, the script flags responses that are unusually large (e.g., containing `>= 100` JSON items/keys or `> 100` XML tags) or contain passive vulnerability indicators (LFI/SQLi/XSS), marking them as `interesting_response` in JSON output.
 
 ## Output
 
-**AutoSwagger2** offers two main output formats: a human-readable table (default) and a machine-readable JSON format for integration with other tools.
+**AutoSwagger2** supports multiple output formats: formatted console tables (default), structured JSON (`-json` / `-product`), spreadsheets (`-csv`), security tooling integration (`-sarif`), and interactive reports (`-html`).
 
 ### Default Table View
 

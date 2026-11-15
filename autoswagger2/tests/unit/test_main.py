@@ -96,3 +96,85 @@ def test_main_api_key_from_file(tmp_path):
         session_passed = MockScanner.call_args[0][2]
         # Default prefix is "Bearer "
         assert session_passed.headers.get("Custom-Auth") == "Bearer file_secret_abc"
+
+
+def test_main_tls_verify_enabled_by_default():
+    test_args = ["autoswagger2", "http://localhost:8082/api-docs"]
+    with patch.object(sys, 'argv', test_args), \
+         patch('autoswagger2.__main__.Scanner') as MockScanner:
+        run()
+        session_passed = MockScanner.call_args[0][2]
+        assert session_passed.verify is True
+
+
+def test_main_insecure_flag_disables_tls_verify():
+    test_args = ["autoswagger2", "http://localhost:8082/api-docs", "-k"]
+    with patch.object(sys, 'argv', test_args), \
+         patch('autoswagger2.__main__.Scanner') as MockScanner:
+        run()
+        session_passed = MockScanner.call_args[0][2]
+        assert session_passed.verify is False
+
+
+def test_main_allow_external_flag():
+    test_args = ["autoswagger2", "http://localhost:8082/api-docs", "--allow-external"]
+    with patch.object(sys, 'argv', test_args), \
+         patch('autoswagger2.__main__.Scanner') as MockScanner:
+        run()
+        parsed_args = MockScanner.call_args[0][1]
+        assert parsed_args.allow_external is True
+
+
+def test_main_test_bola_alias():
+    test_args = ["autoswagger2", "http://localhost:8082/api-docs", "--test-bola", "--bola-id", "userId=1"]
+    with patch.object(sys, 'argv', test_args), \
+         patch('autoswagger2.__main__.Scanner') as MockScanner:
+        run()
+        parsed_args = MockScanner.call_args[0][1]
+        assert parsed_args.bola is True
+        assert parsed_args.bola_id == "userId=1"
+
+
+def test_main_threads_cache_and_connection_pool():
+    test_args = [
+        "autoswagger2",
+        "http://localhost:8082/api-docs",
+        "-t", "35",
+        "--no-cache",
+        "--cache-ttl", "120",
+    ]
+    with patch.object(sys, 'argv', test_args), \
+         patch('autoswagger2.__main__.Scanner') as MockScanner:
+        run()
+        parsed_args = MockScanner.call_args[0][1]
+        session_passed = MockScanner.call_args[0][2]
+
+        assert parsed_args.threads == 35
+        assert parsed_args.no_cache is True
+        assert parsed_args.cache_ttl == 120
+
+        https_adapter = session_passed.get_adapter("https://localhost")
+        http_adapter = session_passed.get_adapter("http://localhost")
+        assert https_adapter._pool_connections == 35
+        assert https_adapter._pool_maxsize == 35
+        assert http_adapter._pool_maxsize == 35
+
+
+def test_main_clamps_threads_and_keeps_min_pool_size():
+    test_args = ["autoswagger2", "http://localhost:8082/api-docs", "-t", "500"]
+    with patch.object(sys, 'argv', test_args), \
+         patch('autoswagger2.__main__.Scanner') as MockScanner:
+        run()
+        parsed_args = MockScanner.call_args[0][1]
+        session_passed = MockScanner.call_args[0][2]
+        assert parsed_args.threads == 100
+        assert session_passed.get_adapter("https://localhost")._pool_maxsize == 100
+
+    test_args_low = ["autoswagger2", "http://localhost:8082/api-docs", "-t", "0"]
+    with patch.object(sys, 'argv', test_args_low), \
+         patch('autoswagger2.__main__.Scanner') as MockScanner:
+        run()
+        parsed_args = MockScanner.call_args[0][1]
+        session_passed = MockScanner.call_args[0][2]
+        assert parsed_args.threads == 1
+        assert session_passed.get_adapter("https://localhost")._pool_maxsize == 20

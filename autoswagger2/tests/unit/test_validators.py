@@ -116,3 +116,32 @@ class TestResultValidator:
         }
         _, details = self.validator.validate_finding(pii_data)
         assert details['AWS_KEY']['category'] == 'Secret/Credential'
+
+    def test_keep_regex_db_uri_with_password_and_localhost(self):
+        db_uri = "postgre" + "sql://user:password@localhost:5432/dbname"
+        pii_data = {
+            'Database Connection URI': {
+                'values': {db_uri},
+                'detection_methods': {'regex'}
+            }
+        }
+        result, details = self.validator.validate_finding(pii_data)
+        assert result is not None
+        assert db_uri in result['Database Connection URI']
+        assert details['Database Connection URI']['category'] == 'Secret/Credential'
+
+    def test_keep_named_example_email_and_reject_placeholder_emails(self):
+        pii_data = {
+            'EMAIL_ADDRESS': {
+                'values': {'john.doe@example.com', 'test@example.com', 'example@example.com'},
+                'detection_methods': {'presidio'},
+            },
+            'PERSON': {
+                'values': {'Contest Winner', 'Test User'},
+                'detection_methods': {'presidio'},
+            },
+        }
+        result, _ = self.validator.validate_finding(pii_data)
+        assert result is not None
+        assert result['EMAIL_ADDRESS'] == ['john.doe@example.com']
+        assert result['PERSON'] == ['Contest Winner']

@@ -2,21 +2,33 @@
 # Manages BOLA (Broken Object Level Authorization) testing.
 
 import requests
+import json
 import re
+import threading
 import uuid
-from urllib.parse import urljoin
-from ..utils.helpers import log
+from ..utils.config import SAFE_HTTP_METHODS
+from ..utils.rate_limiter import get_rate_limiter
+from ..utils.helpers import (
+    log,
+    is_quiet_output,
+    join_base_and_path,
+    build_full_url,
+    is_same_origin_host,
+    build_cross_origin_safe_headers,
+)
 
 class BolaTester:
     def __init__(self, args, session):
         self.args = args
         self.session = session
         self.TIMEOUT = 10
+        self._lock = threading.Lock()
+        self.TOTAL_REQUESTS = 0
 
     def run_tests(self, target_endpoints, bola_param, bola_id, api_base_url, base_path):
         bola_results = []
         if not target_endpoints:
-            if not self.args.product:
+            if not is_quiet_output(self.args):
                 log("BOLA: No target endpoints found for the given parameter.", level="INFO")
             return bola_results
 
@@ -24,18 +36,23 @@ class BolaTester:
             path = endpoint['path']
             method = endpoint['method']
 
-            if not self.args.product:
+            if method.lower() not in SAFE_HTTP_METHODS and getattr(self.args, "risk", None) is False:
+                if getattr(self.args, "verbose", False):
+                    log(f"BOLA: Skipping unsafe method {method.upper()} {path} (use -risk to include).", level="INFO")
+                continue
+
+            if not is_quiet_output(self.args):
                 log(f"BOLA: Testing endpoint {method.upper()} {path}", level="INFO")
 
             # 1. Send baseline request
             baseline_url, baseline_response = self._send_request(method, api_base_url, base_path, path, bola_param, bola_id)
             if baseline_response is None:
-                if not self.args.product:
+                if not is_quiet_output(self.args):
                     log(f"BOLA: Baseline request for ID '{bola_id}' failed (no response). Skipping.", level="WARNING")
                 continue
 
             if baseline_response.status_code != 200:
-                if not self.args.product:
+                if not is_quiet_output(self.args):
                     log(f"BOLA: Baseline request for ID '{bola_id}' returned status {baseline_response.status_code}. Skipping.", level="WARNING")
                 continue
 
@@ -45,7 +62,7 @@ class BolaTester:
             # 2. Generate neighbor IDs and send attack requests
             neighbor_ids = self._generate_neighbor_ids(bola_id)
             if not neighbor_ids:
-                if not self.args.product:
+                if not is_quiet_output(self.args):
                     log(f"BOLA: Could not generate neighbor IDs for '{bola_id}'. Skipping attack phase.", level="WARNING")
                 continue
 
@@ -72,13 +89,28 @@ class BolaTester:
         return bola_results
 
     def _send_request(self, method, api_base_url, base_path, path_template, bola_param, object_id):
-        full_path = (base_path + path_template).replace(f"{{{bola_param}}}", str(object_id))
-        full_url = urljoin(api_base_url, full_path)
+        substituted_template = path_template.replace(f"{{{bola_param}}}", str(object_id))
+        substituted_template = re.sub(r"\{[^{}]+\}", "1", substituted_template)
+        full_path = join_base_and_path(base_path, substituted_template)
+        full_url = build_full_url(api_base_url, full_path)
+
+        request_kwargs = {"allow_redirects": False, "timeout": self.TIMEOUT}
+        if api_base_url and not is_same_origin_host(api_base_url, full_url):
+            if not getattr(self.args, "allow_external", False):
+                if getattr(self.args, "verbose", False):
+                    log(f"BOLA: Blocked cross-origin request to {full_url}", level="WARNING")
+                return full_url, None
+            safe_headers = build_cross_origin_safe_headers(self.session)
+            if safe_headers:
+                request_kwargs["headers"] = safe_headers
 
         try:
             if self.args.verbose:
                 log(f"BOLA: Sending {method.upper()} request to {full_url}", level="DEBUG")
-            response = self.session.request(method.lower(), full_url, timeout=self.TIMEOUT)
+            get_rate_limiter(self.args).wait()
+            with self._lock:
+                self.TOTAL_REQUESTS += 1
+            response = self.session.request(method.lower(), full_url, **request_kwargs)
             if self.args.verbose:
                 log(f"BOLA: Received status {response.status_code} from {full_url}", level="DEBUG")
             return full_url, response
@@ -149,14 +181,50 @@ class BolaTester:
         
         return neighbors
 
-    def _compare_responses(self, baseline, attack):
-        if attack.status_code == 200:
-            # Prevent ZeroDivisionError if baseline is empty
-            if len(baseline.content) == 0:
-                return len(attack.content) > 0
+    def _parse_json_bytes(self, content):
+        if not isinstance(content, (bytes, bytearray)) or not content:
+            return None
+        try:
+            return json.loads(content.decode('utf-8', errors='ignore'))
+        except (json.JSONDecodeError, ValueError):
+            return None
 
-            length_difference = abs(len(baseline.content) - len(attack.content))
-            # Allow for a small difference in content length (e.g., 10%)
-            if (length_difference / len(baseline.content)) < 0.1:
-                return True
+    def _compare_responses(self, baseline, attack):
+        if attack.status_code != 200:
+            return False
+
+        # Prevent ZeroDivisionError if baseline is empty
+        if len(baseline.content) == 0:
+            return len(attack.content) > 0
+
+        base_json = self._parse_json_bytes(baseline.content)
+        attack_json = self._parse_json_bytes(attack.content)
+
+        if base_json is not None and attack_json is not None:
+            if isinstance(attack_json, dict):
+                if (
+                    attack_json.get('success') is False
+                    or attack_json.get('status') in (401, 403, 404, 'error', 'unauthorized', 'forbidden')
+                    or (bool(attack_json.get('error')) and not (isinstance(base_json, dict) and bool(base_json.get('error'))))
+                ):
+                    return False
+
+            if isinstance(base_json, dict) and isinstance(attack_json, dict):
+                if base_json == attack_json:
+                    return False
+                if not base_json or not attack_json:
+                    return bool(attack_json) and not bool(base_json)
+                overlap = len(set(base_json) & set(attack_json)) / max(len(base_json), len(attack_json))
+                return overlap >= 0.5
+
+            if isinstance(base_json, list) and isinstance(attack_json, list):
+                return len(attack_json) > 0 and base_json != attack_json
+
+        elif (base_json is not None) != (attack_json is not None):
+            return False
+
+        length_difference = abs(len(baseline.content) - len(attack.content))
+        # Allow for a small difference in content length (e.g., 10%) for non-JSON responses
+        if (length_difference / len(baseline.content)) < 0.1:
+            return True
         return False

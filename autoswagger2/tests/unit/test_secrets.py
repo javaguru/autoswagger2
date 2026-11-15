@@ -92,3 +92,32 @@ class TestSecretDetection:
         assert 'JWT Token' in TRUFFLEHOG_REGEXES
         assert 'AWS API Key' in TRUFFLEHOG_REGEXES
         assert 'Database Connection URI' in TRUFFLEHOG_REGEXES
+
+    def test_no_sha1_or_generic_json_false_positives(self):
+        # 40-char git SHA-1 hash and benign JSON fields must not flag secrets/debug leaks
+        content = '{"commit": "a94a8fe5ccb19ba61c4c0873d391e987982fbbd3", "error": null, "status": "unknown", "debug": false}'
+        sensitive, _ = detect_sensitive_info(content)
+        assert sensitive is None
+
+    def test_redos_safety_on_long_line(self):
+        import time
+        long_line = "secret " + ("a" * 50000) + "!"
+        start = time.monotonic()
+        detect_sensitive_info(long_line)
+        elapsed = time.monotonic() - start
+        assert elapsed < 0.2
+
+    def test_detect_jdbc_uri_and_json_stripe_or_generic_apikey(self):
+        stripe_part = "sk_" + "live_abcdefghijklmn"
+        content = (
+            '{"database.url":"jdbc:postgre' + 'sql://prod-db.internal:5432/main",'
+            '"log.level":"DEBUG",'
+            f'"payment.gateway.apikey":"{stripe_part}"'
+            '}'
+        )
+        sensitive, _ = detect_sensitive_info(content)
+        assert sensitive is not None
+        assert "Database Connection URI" in sensitive
+        assert "Stripe API Key" in sensitive
+        assert "API Key (Generic)" in sensitive
+        assert all(isinstance(v, str) for vals in sensitive.values() for v in vals)

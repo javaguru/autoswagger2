@@ -213,37 +213,149 @@ def test_test_parameter_values(monkeypatch):
     responses = req._test_parameter_values("GET", "http://localhost", "/api", parameters, None, None)
     assert len(responses) == 1
 
-    # With brute force: should send multiple combinations
+    # With brute force: one-parameter-at-a-time linear strategy
     args.brute = True
-    # Standard integers list has 6 elements, strings has ~20. To keep tests fast we'll stub the parameter values
     monkeypatch.setattr(req, "_generate_parameter_values", lambda p_type, enum=None: [1, 2] if p_type == "integer" else ["a", "b"])
     
     responses_brute = req._test_parameter_values("GET", "http://localhost", "/api", parameters, None, None)
-    # 2 values for id * 2 values for status = 4 combinations
-    assert len(responses_brute) == 4
+    # 1 baseline + (2-1) for id + (2-1) for status = 3 requests
+    assert len(responses_brute) == 3
 
-def test_test_webhook_and_endpoint(monkeypatch):
-    args = get_default_args(verbose=True, product=True)
+    # With 4 parameters x 5 values: 1 + 4*(5-1) = 17 requests instead of 5^4 = 625
+    four_params = [{"name": f"p{i}", "in": "query", "schema": {"type": "string", "enum": ["v1", "v2", "v3", "v4", "v5"]}} for i in range(4)]
+    monkeypatch.setattr(req, "_generate_parameter_values", lambda p_type, enum=None: enum if enum else ["default"])
+    responses_four = req._test_parameter_values("GET", "http://localhost", "/api", four_params, None, None)
+    assert len(responses_four) == 17
+
+
+def test_build_request_body_recursive_cyclic_ref_and_nested_array():
+    args = get_default_args()
     session = requests.Session()
     req = Requester("http://localhost", args, session)
 
+    spec = {
+        "components": {
+            "schemas": {
+                "Address": {
+                    "type": "object",
+                    "properties": {"city": {"type": "string", "enum": ["Paris"]}}
+                },
+                "Meta": {
+                    "type": "object",
+                    "properties": {"tag": {"type": ["string", "null"]}}
+                },
+                "Combined": {
+                    "allOf": [
+                        {"$ref": "#/components/schemas/Address"},
+                        {"$ref": "#/components/schemas/Meta"}
+                    ]
+                },
+                "Node": {
+                    "type": "object",
+                    "properties": {
+                        "label": {"type": "string"},
+                        "address": {"$ref": "#/components/schemas/Address"},
+                        "combined": {"$ref": "#/components/schemas/Combined"},
+                        "items": {"type": "array", "items": {"$ref": "#/components/schemas/Address"}},
+                        "children": {"type": "array", "items": {"$ref": "#/components/schemas/Node"}},
+                        "parent": {"$ref": "#/components/schemas/Node"}
+                    }
+                }
+            }
+        }
+    }
+    body_json = req._build_request_body({"$ref": "#/components/schemas/Node"}, "application/json", spec_data=spec)
+    parsed = json.loads(body_json)
+    assert parsed["address"] == {"city": "Paris"}
+    assert parsed["combined"]["city"] == "Paris"
+    assert isinstance(parsed["combined"]["tag"], str)
+    assert parsed["items"] == [{"city": "Paris"}]
+    assert parsed["children"] == []
+    assert "parent" not in parsed
+
+    arr_json = req._build_request_body({"type": "array", "items": {"$ref": "#/components/schemas/Address"}}, "application/json", spec_data=spec)
+    assert json.loads(arr_json) == [{"city": "Paris"}]
+
+
+def test_detect_response_anomalies():
+    args = get_default_args()
+    req = Requester("http://localhost", args, requests.Session())
+
+    assert "Potential File Disclosure (LFI)" in req._detect_response_anomalies("root:x:0:0:root:/root:/bin/bash", "text/plain")
+    assert "SQL/Database Error Leak" in req._detect_response_anomalies("You have an error in your SQL syntax; check the manual that corresponds to your MySQL server", "application/json")
+    assert "Reflected HTML/XSS Indicator" in req._detect_response_anomalies(
+        "<html><body>Hello <script>alert(1)</script></body></html>",
+        "text/html",
+        {"q": "<script>alert(1)</script>"}
+    )
+    assert req._detect_response_anomalies('{"error": null, "status": "ok"}', "application/json") == []
+
+def test_test_webhook_and_endpoint(monkeypatch):
+    args = get_default_args(verbose=True, product=True, allow_external=False)
+    session = requests.Session()
+    session.headers["Authorization"] = "Bearer secret-token"
+    req = Requester("http://localhost", args, session)
+
+    captured_calls = []
     mock_resp = MagicMock()
     mock_resp.status_code = 200
     mock_resp.content = b"ok"
     mock_resp.headers = {}
-    monkeypatch.setattr(session, "request", lambda *a, **kw: mock_resp)
+
+    def mock_request(method, url, **kwargs):
+        captured_calls.append((method, url, kwargs.get("headers", {})))
+        return mock_resp
+
+    monkeypatch.setattr(session, "request", mock_request)
 
     # Test webhook skipping runtime variables
     results = req._test_webhook("{$request.body#/callbackUrl}", "POST", [], "/api", None, None, "test_hook")
     assert results == []
 
-    # Test webhook with full URL vs relative
-    results_url = req._test_webhook("http://callback.com/receiver", "POST", [], "/api", None, None, "test_hook")
-    assert len(results_url) == 1
+    # Test same-origin full URL webhook
+    results_same_origin = req._test_webhook("http://localhost/receiver", "POST", [], "/api", None, None, "test_hook")
+    assert len(results_same_origin) == 1
+    assert results_same_origin[0]["url"] == "http://localhost/receiver"
+
+    # Test external webhook blocked by default
+    results_ext_blocked = req._test_webhook("http://callback.com/receiver", "POST", [], "/api", None, None, "test_hook")
+    assert results_ext_blocked == []
+
+    # Test external webhook allowed with --allow-external strips sensitive session headers
+    args.allow_external = True
+    captured_calls.clear()
+    results_ext_allowed = req._test_webhook("http://callback.com/receiver", "POST", [], "/api", None, None, "test_hook")
+    assert len(results_ext_allowed) == 1
+    assert results_ext_allowed[0]["url"] == "http://callback.com/receiver"
+    assert captured_calls[0][2].get("Authorization") is None
+    assert "Authorization" in captured_calls[0][2]
 
     # Test normal endpoint wrapper
     results_ep = req._test_endpoint("/users", "GET", [], "/api", None, None)
     assert len(results_ep) == 1
+
+
+def test_root_base_path_url_building(monkeypatch):
+    args = get_default_args(product=True)
+    session = requests.Session()
+    req = Requester("http://localhost:8080", args, session)
+
+    called_urls = []
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.content = b"ok"
+    mock_resp.headers = {}
+
+    def mock_request(method, url, **kwargs):
+        called_urls.append(url)
+        return mock_resp
+
+    monkeypatch.setattr(session, "request", mock_request)
+
+    params = [{"name": "id", "in": "path", "type": "integer"}]
+    results = req._test_endpoint("/users/{id}", "GET", params, "/", None, None)
+    assert len(results) == 1
+    assert called_urls == ["http://localhost:8080/users/1"]
 
 def test_test_endpoints_orchestration(monkeypatch):
     args = get_default_args(risk=True, product=True)

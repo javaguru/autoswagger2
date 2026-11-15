@@ -290,3 +290,86 @@ def test_parse_swagger_ui_page_script_exception():
     spec, spec_url = finder._parse_swagger_ui_page("http://localhost/swagger-ui")
     assert spec is None
 
+
+def test_fetch_swagger_spec_blocks_cross_origin_by_default():
+    args = argparse.Namespace(verbose=True, product=False, allow_external=False)
+    url_map = {
+        "http://evil.com/openapi.json": MockResponse('{"openapi": "3.0.0", "paths": {}}')
+    }
+    session = MockSession(url_map)
+    finder = SpecFinder("http://localhost/api", args, session)
+    finder.cache.get_cached_spec = lambda url: None
+
+    spec = finder._fetch_swagger_spec("http://evil.com/openapi.json")
+    assert spec is None
+    assert session.history == []
+
+
+def test_fetch_swagger_spec_blocks_cross_origin_redirect():
+    args = argparse.Namespace(verbose=True, product=False, allow_external=False)
+    url_map = {
+        "http://localhost/swagger.json": MockResponse("", 302, headers={"Location": "http://evil.com/openapi.json"}),
+        "http://evil.com/openapi.json": MockResponse('{"openapi": "3.0.0", "paths": {}}')
+    }
+    session = MockSession(url_map)
+    finder = SpecFinder("http://localhost/api", args, session)
+    finder.cache.get_cached_spec = lambda url: None
+
+    spec = finder._fetch_swagger_spec("http://localhost/swagger.json")
+    assert spec is None
+    assert session.history == ["http://localhost/swagger.json"]
+
+
+def test_fetch_swagger_spec_allow_external_strips_auth_headers():
+    args = argparse.Namespace(verbose=True, product=False, allow_external=True)
+    recorded_headers = []
+
+    class RecordingSession:
+        def __init__(self):
+            self.headers = {
+                "Authorization": "Bearer super-secret",
+                "X-API-Key": "secret-key",
+                "User-Agent": "AutoSwagger2/2.0.3",
+            }
+
+        def get(self, url, **kwargs):
+            recorded_headers.append((url, kwargs.get("headers", {})))
+            if url == "http://localhost/swagger.json":
+                return MockResponse("", 302, headers={"Location": "http://evil.com/openapi.json"})
+            if url == "http://evil.com/openapi.json":
+                return MockResponse('{"openapi": "3.0.0", "paths": {}}', 200)
+            return MockResponse("Not Found", 404)
+
+    session = RecordingSession()
+    finder = SpecFinder("http://localhost/api", args, session)
+    finder.cache.get_cached_spec = lambda url: None
+
+    spec = finder._fetch_swagger_spec("http://localhost/swagger.json")
+    assert spec is not None
+    assert spec["openapi"] == "3.0.0"
+    assert len(recorded_headers) == 2
+    assert recorded_headers[0][0] == "http://localhost/swagger.json"
+    assert recorded_headers[0][1] == {}
+    assert recorded_headers[1][0] == "http://evil.com/openapi.json"
+    assert recorded_headers[1][1].get("Authorization") is None
+    assert "Authorization" in recorded_headers[1][1]
+    assert recorded_headers[1][1].get("X-API-Key") is None
+    assert "X-API-Key" in recorded_headers[1][1]
+
+
+def test_parse_swagger_ui_page_blocks_external_script():
+    args = argparse.Namespace(verbose=True, product=False, allow_external=False)
+    html_content = '<html><head><script src="http://evil.com/swagger-ui-init.js"></script></head><body>swagger</body></html>'
+    url_map = {
+        "http://localhost/swagger-ui": MockResponse(html_content),
+        "http://evil.com/swagger-ui-init.js": MockResponse('var options = {"swaggerDoc": {"openapi": "3.0.0", "paths": {}}};')
+    }
+    session = MockSession(url_map)
+    finder = SpecFinder("http://localhost/swagger-ui", args, session)
+    finder.cache.get_cached_spec = lambda url: None
+
+    spec, spec_url = finder._parse_swagger_ui_page("http://localhost/swagger-ui")
+    assert spec is None
+    assert spec_url is None
+    assert session.history == ["http://localhost/swagger-ui"]
+

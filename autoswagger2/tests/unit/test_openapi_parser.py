@@ -112,3 +112,113 @@ class TestOpenAPIParser:
         assert len(endpoints) == 5
         methods = [ep['method'] for ep in endpoints]
         assert 'get' in methods and 'post' in methods
+
+    def test_resolve_ref_chained_cyclic_and_rfc6901(self):
+        spec = {
+            'openapi': '3.0.1',
+            'components': {
+                'schemas': {
+                    'Base~Name/Obj': {
+                        'type': 'object',
+                        'properties': {'id': {'type': 'integer'}}
+                    },
+                    'Alias': {'$ref': '#/components/schemas/Base~0Name~1Obj'},
+                    'Node': {
+                        'type': 'object',
+                        'properties': {
+                            'name': {'type': 'string'},
+                            'parent': {'$ref': '#/components/schemas/Node'}
+                        }
+                    }
+                }
+            },
+            'paths': {}
+        }
+        parser = OpenAPIParser(spec)
+        resolved_alias = parser.resolve_ref({'$ref': '#/components/schemas/Alias'})
+        assert resolved_alias['type'] == 'object'
+        assert 'id' in resolved_alias['properties']
+
+        resolved_node = parser.resolve_ref({'$ref': '#/components/schemas/Node'})
+        assert resolved_node['type'] == 'object'
+        assert 'parent' in resolved_node['properties']
+
+    def test_path_item_parameters_merge_and_override(self):
+        spec = {
+            'openapi': '3.0.1',
+            'components': {
+                'parameters': {
+                    'TenantHeader': {'name': 'X-Tenant', 'in': 'header', 'schema': {'type': 'string'}}
+                }
+            },
+            'paths': {
+                '/users/{id}': {
+                    'parameters': [
+                        {'name': 'id', 'in': 'path', 'required': True, 'schema': {'type': 'string'}},
+                        {'$ref': '#/components/parameters/TenantHeader'}
+                    ],
+                    'get': {
+                        'parameters': [
+                            {'name': 'id', 'in': 'path', 'required': True, 'schema': {'type': 'integer'}}
+                        ]
+                    }
+                }
+            }
+        }
+        parser = OpenAPIParser(spec)
+        endpoints = parser.extract_all_endpoints()
+        assert len(endpoints) == 1
+        params = endpoints[0]['parameters']
+        by_name = {p['name']: p for p in params}
+        assert by_name['id']['type'] == 'integer'
+        assert by_name['X-Tenant']['in'] == 'header'
+
+    def test_parse_swagger2_body_and_formdata(self):
+        spec = {
+            'swagger': '2.0',
+            'definitions': {
+                'UserInput': {'type': 'object', 'properties': {'username': {'type': 'string'}}}
+            },
+            'paths': {
+                '/users': {
+                    'post': {
+                        'consumes': ['application/json'],
+                        'parameters': [
+                            {'name': 'body', 'in': 'body', 'required': True, 'schema': {'$ref': '#/definitions/UserInput'}}
+                        ]
+                    }
+                },
+                '/upload': {
+                    'post': {
+                        'parameters': [
+                            {'name': 'title', 'in': 'formData', 'type': 'string'},
+                            {'name': 'doc', 'in': 'formData', 'type': 'file', 'required': True}
+                        ]
+                    }
+                }
+            }
+        }
+        parser = OpenAPIParser(spec)
+        endpoints = {ep['path']: ep for ep in parser.extract_all_endpoints()}
+        assert 'application/json' in endpoints['/users']['request_bodies']
+        assert endpoints['/users']['request_bodies']['application/json']['schema']['properties']['username']['type'] == 'string'
+        assert endpoints['/users']['request_bodies']['application/json']['required'] is True
+        assert 'multipart/form-data' in endpoints['/upload']['request_bodies']
+        assert endpoints['/upload']['request_bodies']['multipart/form-data']['required'] is True
+
+    def test_normalize_openapi_31_nullable_type_list(self):
+        spec = {
+            'openapi': '3.1.0',
+            'paths': {
+                '/search': {
+                    'get': {
+                        'parameters': [
+                            {'name': 'count', 'in': 'query', 'schema': {'type': ['integer', 'null']}}
+                        ]
+                    }
+                }
+            }
+        }
+        parser = OpenAPIParser(spec)
+        endpoints = parser.extract_all_endpoints()
+        assert endpoints[0]['parameters'][0]['type'] == 'integer'

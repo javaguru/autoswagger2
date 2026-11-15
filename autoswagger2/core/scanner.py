@@ -3,6 +3,7 @@
 
 import time
 import os
+import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib.parse import urlparse
 
@@ -15,7 +16,8 @@ from ..analysis.bola import BolaTester
 from ..analysis.bfla import BflaTester
 from ..analysis.bopla import BoplaTester
 from ..analysis.urc import UrcTester
-from ..utils.helpers import log, console, print_banner
+from ..utils.config import HTTP_METHODS, SAFE_HTTP_METHODS
+from ..utils.helpers import log, console, print_banner, is_quiet_output, is_same_origin_host
 
 class Scanner:
     def __init__(self, urls, args, session):
@@ -23,6 +25,8 @@ class Scanner:
         self.args = args
         self.session = session
         self.reporter = Reporter(args)
+        self._lock = threading.Lock()
+        self._per_url_workers = self._get_max_workers()
         self.all_results = []
         self.bola_results = []
         self.bfla_results = []
@@ -41,16 +45,31 @@ class Scanner:
         }
         self.TOTAL_REQUESTS = 0
 
+    def _get_max_workers(self):
+        raw_threads = getattr(self.args, "threads", 20)
+        if isinstance(raw_threads, bool) or not isinstance(raw_threads, int) or raw_threads < 1:
+            return 20
+        return min(100, raw_threads)
+
+    def _add_request_count(self, component):
+        count = getattr(component, "TOTAL_REQUESTS", 0)
+        if isinstance(count, int) and not isinstance(count, bool):
+            with self._lock:
+                self.TOTAL_REQUESTS += count
+
     def run(self):
-        if not self.args.product:
+        if not is_quiet_output(self.args):
             print_banner()
 
         start_time = time.time()
-        max_workers = min(100, os.cpu_count() * 5, len(self.urls)) if self.urls else 1
+        configured_workers = self._get_max_workers()
+        url_count = len(self.urls) if self.urls else 1
+        max_workers = max(1, min(configured_workers, url_count))
+        self._per_url_workers = max(1, configured_workers // max_workers)
 
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             futs = {executor.submit(self.process_url, url): url for url in self.urls}
-            if not self.args.product:
+            if not is_quiet_output(self.args):
                 with Progress(
                         SpinnerColumn(),
                         TextColumn("[progress.description]{task.description}"),
@@ -89,21 +108,23 @@ class Scanner:
             for spec_url, spec_data in self.processed_specs.items():
                 swagger_spec = spec_data['spec']
                 parsed_spec_url = urlparse(spec_url)
-                api_base_url = f"{parsed_spec_url.scheme}://{parsed_spec_url.netloc}"
+                api_base_url = spec_data.get('api_base_url') or f"{parsed_spec_url.scheme}://{parsed_spec_url.netloc}"
                 base_path = spec_data['base_path']
                 results = bfla_tester.run_tests(swagger_spec, api_base_url, base_path)
                 self.bfla_results.extend(results)
+            self._add_request_count(bfla_tester)
 
         # --- BOPLA Testing ---
         if self.args.test_bopla:
-            bopla_tester = BoplaTester(self.args, self.session)
+            bopla_tester = BoplaTester(self.args, self.session, bola_param, bola_id)
             for spec_url, spec_data in self.processed_specs.items():
                 swagger_spec = spec_data['spec']
                 parsed_spec_url = urlparse(spec_url)
-                api_base_url = f"{parsed_spec_url.scheme}://{parsed_spec_url.netloc}"
+                api_base_url = spec_data.get('api_base_url') or f"{parsed_spec_url.scheme}://{parsed_spec_url.netloc}"
                 base_path = spec_data['base_path']
                 results = bopla_tester.run_tests(swagger_spec, api_base_url, base_path)
                 self.bopla_results.extend(results)
+            self._add_request_count(bopla_tester)
 
         # --- BOLA Testing ---
         if self.args.bola and bola_param and bola_id:
@@ -114,11 +135,12 @@ class Scanner:
 
                 if target_endpoints:
                     parsed_spec_url = urlparse(spec_url)
-                    api_base_url = f"{parsed_spec_url.scheme}://{parsed_spec_url.netloc}"
+                    api_base_url = spec_data.get('api_base_url') or f"{parsed_spec_url.scheme}://{parsed_spec_url.netloc}"
                     base_path = spec_data['base_path']
 
                     results = bola_tester.run_tests(target_endpoints, bola_param, bola_id, api_base_url, base_path)
                     self.bola_results.extend(results)
+            self._add_request_count(bola_tester)
 
         # --- URC Testing ---
         if self.args.test_urc:
@@ -126,60 +148,151 @@ class Scanner:
             for spec_url, spec_data in self.processed_specs.items():
                 swagger_spec = spec_data['spec']
                 parsed_spec_url = urlparse(spec_url)
-                api_base_url = f"{parsed_spec_url.scheme}://{parsed_spec_url.netloc}"
+                api_base_url = spec_data.get('api_base_url') or f"{parsed_spec_url.scheme}://{parsed_spec_url.netloc}"
                 base_path = spec_data['base_path']
                 results = urc_tester.run_tests(swagger_spec, api_base_url, base_path)
                 self.urc_results.extend(results)
+            self._add_request_count(urc_tester)
 
         end_time = time.time()
         self._calculate_stats(start_time, end_time)
         self.reporter.print_results(self.all_results, self.stats, self.bola_results, self.bfla_results, self.bopla_results, self.urc_results)
 
     def process_url(self, base_url):
-        self.stats["active_hosts"] += 1
+        with self._lock:
+            self.stats["active_hosts"] += 1
         finder = SpecFinder(base_url, self.args, self.session)
-        swagger_spec, spec_url = finder.find()
+        try:
+            swagger_spec, spec_url = finder.find()
+        finally:
+            self._add_request_count(finder)
 
         if swagger_spec:
-            self.stats["hosts_with_valid_spec"] += 1
+            if spec_url and not is_same_origin_host(base_url, spec_url) and not getattr(self.args, "allow_external", False):
+                if getattr(self.args, "verbose", False):
+                    log(f"Ignoring cross-origin spec URL {spec_url} for {base_url}", level="WARNING")
+                return
 
             base_path = self._get_base_path(swagger_spec, spec_url)
-            self.processed_specs[spec_url] = {'spec': swagger_spec, 'base_path': base_path}
 
-            if not self.args.product:
-                log(f"Scanning endpoints with base path: {base_path}", level="INFO")
+            if not is_quiet_output(self.args):
+                log(f"Scanning endpoints with base path: {base_path or '/'}", level="INFO")
 
-            parsed_spec_url = urlparse(spec_url)
-            api_base_url = f"{parsed_spec_url.scheme}://{parsed_spec_url.netloc}"
+            parsed_target_url = urlparse(base_url)
+            api_base_url = self._resolve_api_base_url(swagger_spec, spec_url, base_url)
+            target_origin = (
+                f"{parsed_target_url.scheme}://{parsed_target_url.netloc}"
+                if parsed_target_url.scheme and parsed_target_url.netloc
+                else api_base_url
+            )
+
+            with self._lock:
+                self.stats["hosts_with_valid_spec"] += 1
+                self.processed_specs[spec_url] = {
+                    'spec': swagger_spec,
+                    'base_path': base_path,
+                    'api_base_url': api_base_url,
+                    'auth_origin': target_origin,
+                }
 
             requester = Requester(api_base_url, self.args, self.session)
-            results = requester.test_endpoints(swagger_spec, base_path)
-            self.TOTAL_REQUESTS += requester.TOTAL_REQUESTS
+            requester.auth_origin = target_origin
+            requester.max_workers = getattr(self, "_per_url_workers", self._get_max_workers())
+            try:
+                results = requester.test_endpoints(swagger_spec, base_path)
+            finally:
+                self._add_request_count(requester)
 
             if results:
-                self.all_results.extend(results)
-                self.stats["hosts_with_valid_endpoint"] += 1
+                host_has_pii = False
+                pii_types = set()
+                regex_values = set()
                 for rr in results:
                     if rr.get('pii_detected'):
-                        self.stats["hosts_with_pii"] = 1
+                        host_has_pii = True
                         pii_details = rr.get('pii_detection_details')
                         if isinstance(pii_details, dict):
-                            for pii_type in pii_details.keys():
-                                self.stats["pii_detection_methods"].add(pii_type)
+                            pii_types.update(pii_details.keys())
 
                         regex_patterns = rr.get('regex_patterns_found')
                         if isinstance(regex_patterns, dict):
-                            for pattern in regex_patterns.values():
-                                self.stats["regexes_found"].add(pattern)
+                            regex_values.update(regex_patterns.values())
+
+                with self._lock:
+                    self.all_results.extend(results)
+                    self.stats["hosts_with_valid_endpoint"] += 1
+                    if host_has_pii:
+                        self.stats["hosts_with_pii"] += 1
+                    self.stats["pii_detection_methods"].update(pii_types)
+                    self.stats["regexes_found"].update(regex_values)
         else:
-            log(f"No spec found for {base_url}.", level="INFO")
+            if not is_quiet_output(self.args):
+                log(f"No spec found for {base_url}.", level="INFO")
+
+    def _expand_server_url(self, server_entry):
+        if not isinstance(server_entry, dict):
+            return '/'
+        url = server_entry.get('url', '/')
+        if not isinstance(url, str):
+            return '/'
+        variables = server_entry.get('variables')
+        if isinstance(variables, dict):
+            for var_name, var_def in variables.items():
+                if isinstance(var_def, dict) and 'default' in var_def:
+                    url = url.replace(f"{{{var_name}}}", str(var_def['default']))
+        return url
+
+    def _resolve_api_base_url(self, swagger_spec, spec_url, base_url):
+        parsed_target_url = urlparse(base_url)
+        target_origin = (
+            f"{parsed_target_url.scheme}://{parsed_target_url.netloc}"
+            if parsed_target_url.scheme and parsed_target_url.netloc
+            else base_url
+        )
+        if spec_url:
+            parsed_spec_url = urlparse(spec_url)
+            spec_origin = (
+                f"{parsed_spec_url.scheme}://{parsed_spec_url.netloc}"
+                if parsed_spec_url.scheme and parsed_spec_url.netloc
+                else target_origin
+            )
+            default_origin = target_origin if not is_same_origin_host(base_url, spec_url) else spec_origin
+        else:
+            default_origin = target_origin
+
+        candidate = None
+        servers = swagger_spec.get('servers') if isinstance(swagger_spec, dict) else None
+        if isinstance(servers, list) and servers:
+            server_url = self._expand_server_url(servers[0])
+            parsed_server = urlparse(server_url)
+            if parsed_server.scheme in ('http', 'https') and parsed_server.netloc and '{' not in parsed_server.netloc:
+                candidate = f"{parsed_server.scheme}://{parsed_server.netloc}"
+        elif isinstance(swagger_spec, dict) and isinstance(swagger_spec.get('host'), str):
+            raw_host = swagger_spec['host'].strip()
+            if raw_host and '{' not in raw_host:
+                schemes = swagger_spec.get('schemes')
+                default_scheme = urlparse(default_origin).scheme or 'https'
+                if isinstance(schemes, list):
+                    valid_schemes = [s for s in schemes if isinstance(s, str) and s.lower() in ('http', 'https')]
+                    scheme = valid_schemes[0].lower() if valid_schemes else default_scheme
+                else:
+                    scheme = default_scheme
+                candidate = f"{scheme}://{raw_host}"
+
+        if candidate:
+            if is_same_origin_host(default_origin, candidate) or getattr(self.args, 'allow_external', False):
+                return candidate
+            if getattr(self.args, 'verbose', False):
+                log(f"Ignoring cross-origin server URL {candidate} for {default_origin} (use --allow-external to enable).", level="WARNING")
+
+        return default_origin
 
     def _get_base_path(self, swagger_spec, spec_url):
         base_path = '/'
         if 'servers' in swagger_spec and isinstance(swagger_spec['servers'], list) and swagger_spec['servers']:
-            server_url = swagger_spec['servers'][0].get('url', '/')
-            base_path = urlparse(server_url).path
-        elif 'basePath' in swagger_spec:
+            server_url = self._expand_server_url(swagger_spec['servers'][0])
+            base_path = urlparse(server_url).path or '/'
+        elif isinstance(swagger_spec.get('basePath'), str) and swagger_spec['basePath']:
             base_path = swagger_spec['basePath']
 
         if base_path == '/':
@@ -193,13 +306,25 @@ class Scanner:
 
         if base_path.endswith('/') and len(base_path) > 1:
             base_path = base_path[:-1]
+        if base_path == '/':
+            return ''
         return base_path
 
     def _find_bola_targets(self, swagger_spec, bola_param):
         targets = []
+        is_risk = bool(getattr(self.args, "risk", False))
         for path, methods in swagger_spec.get('paths', {}).items():
+            if not isinstance(methods, dict):
+                continue
             if f"{{{bola_param}}}" in path:
                 for method, details in methods.items():
+                    method_lower = method.lower()
+                    if method_lower not in HTTP_METHODS or not isinstance(details, dict):
+                        continue
+                    if method_lower not in SAFE_HTTP_METHODS and not is_risk:
+                        if getattr(self.args, "verbose", False):
+                            log(f"Skipping unsafe BOLA method {method.upper()} {path} (use -risk to include).", level="INFO")
+                        continue
                     targets.append({'path': path, 'method': method})
         return targets
 

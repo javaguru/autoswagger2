@@ -183,3 +183,108 @@ def test_print_tables(capsys):
     assert "BOPLA Test Results" in captured.out
     assert "Unrestricted Resource Consumption" in captured.out
     assert "Scan Statistics" in captured.out
+
+
+def test_export_html_escapes_xss(tmp_path):
+    outfile = tmp_path / "xss_report.html"
+    args = Namespace(out=str(outfile))
+    reporter = Reporter(args)
+
+    final_results = [
+        {
+            "method": 'G"ET<x>',
+            "url": "http://example.com/?q=<script>alert(1)</script>",
+            "status_code": 200,
+            "content_length": 100,
+            "pii_detected": False,
+            "sensitive_parameters": [{"category": "credentials", "in": "query", "name": "<img src=x onerror=alert(1)>"}],
+        }
+    ]
+    reporter.export_html(final_results, {})
+    content = outfile.read_text(encoding="utf-8")
+    assert "<script>alert(1)</script>" not in content
+    assert "<img src=x onerror=alert(1)>" not in content
+    assert "&lt;script&gt;alert(1)&lt;/script&gt;" in content
+    assert "&lt;img src=x onerror=alert(1)&gt;" in content
+
+
+def test_grouped_results_keeps_secret_over_larger_404(capsys):
+    args = Namespace(json=True, stats=False, product=False, severity=None)
+    reporter = Reporter(args)
+
+    all_results = [
+        {
+            "method": "GET",
+            "url": "http://example.com/users/1",
+            "path_template": "/users/{id}",
+            "status_code": 200,
+            "content_length": 120,
+            "pii_detected": True,
+            "pii_detection_details": {"AWS API Key": {"detection_methods": ["regex"]}},
+            "body": "",
+        },
+        {
+            "method": "GET",
+            "url": "http://example.com/users/test",
+            "path_template": "/users/{id}",
+            "status_code": 404,
+            "content_length": 2500,
+            "pii_detected": False,
+            "body": "",
+        },
+    ]
+
+    reporter.print_results(all_results, {})
+    data = json.loads(capsys.readouterr().out)
+    assert len(data["results"]) == 1
+    assert data["results"][0]["status_code"] == 200
+    assert data["results"][0]["pii_detected"] is True
+
+
+def test_json_mode_stdout_is_pure_json_despite_logs(capsys):
+    from autoswagger2.utils.helpers import log, print_banner
+
+    args = Namespace(json=True, product=False, stats=True, severity=None)
+    reporter = Reporter(args)
+
+    print_banner()
+    log("Starting scan...", level="INFO")
+    reporter.print_results(
+        [{"method": "GET", "url": "http://example.com/api", "path_template": "/api", "status_code": 200, "content_length": 42, "body": ""}],
+        {"active_hosts": 1}
+    )
+
+    captured = capsys.readouterr()
+    parsed = json.loads(captured.out)
+    assert "results" in parsed
+    assert len(parsed["results"]) == 1
+    assert "Starting scan..." in captured.err
+
+
+def test_exports_include_active_vulns_and_html_escapes(tmp_path):
+    csv_file = tmp_path / "full.csv"
+    sarif_file = tmp_path / "full.sarif"
+    html_file = tmp_path / "full.html"
+
+    bola = [{"vulnerable": True, "method": "GET", "url_template": "/users/{id}", "baseline_id": "1", "attack_id": "2", "attack_status": 200, "attack_length": 150}]
+    bfla = [{"vulnerable": True, "method": "POST", "url_template": "/admin/reset", "status_code": 200}]
+    bopla = [{"vulnerable": True, "method": "PATCH", "url_template": "/users/1", "injected_property": "isAdmin", "request_body": '{"<img src=x onerror=alert(1)>":true}', "status_code": 200}]
+    urc = [{"vulnerable": True, "method": "GET", "url_template": "/items", "parameter": "limit", "attack_value": 999999, "response_time_ms": 6000, "content_length": 700000, "status_code": 200}]
+
+    Reporter(Namespace(out=str(csv_file))).export_csv([], bola, bfla, bopla, urc)
+    csv_text = csv_file.read_text(encoding="utf-8")
+    assert "BOLA Vulnerable" in csv_text
+    assert "BFLA Vulnerable" in csv_text
+    assert "BOPLA Vulnerable" in csv_text
+    assert "URC Vulnerable" in csv_text
+
+    Reporter(Namespace(out=str(sarif_file))).export_sarif([], bola, bfla, bopla, urc)
+    sarif_data = json.loads(sarif_file.read_text(encoding="utf-8"))
+    rule_ids = [r["ruleId"] for r in sarif_data["runs"][0]["results"]]
+    assert rule_ids == ["BOLA-Vulnerability", "BFLA-Vulnerability", "BOPLA-Vulnerability", "URC-Vulnerability"]
+
+    Reporter(Namespace(out=str(html_file))).export_html([], {}, bola, bfla, bopla, urc)
+    html_text = html_file.read_text(encoding="utf-8")
+    assert "Active Vulnerability Findings" in html_text
+    assert "<img src=x onerror=alert(1)>" not in html_text
+    assert "&lt;img src=x onerror=alert(1)&gt;" in html_text

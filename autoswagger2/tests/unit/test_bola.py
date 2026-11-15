@@ -138,3 +138,81 @@ def test_bola_run_tests(monkeypatch):
     assert len(results) > 0
     assert results[0]['vulnerable'] is True
 
+
+def test_bola_skips_unsafe_methods_without_risk(monkeypatch):
+    args = argparse.Namespace(verbose=False, product=True, risk=False)
+    session = requests.Session()
+    tester = BolaTester(args, session)
+
+    called_methods = []
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.content = b"user profile info"
+
+    def mock_send(method, api_base, base_path, path, param, object_id):
+        called_methods.append(method)
+        return "url", mock_resp
+
+    monkeypatch.setattr(tester, "_send_request", mock_send)
+    endpoints = [
+        {"path": "/users/{userId}", "method": "delete"},
+        {"path": "/users/{userId}", "method": "put"},
+        {"path": "/users/{userId}", "method": "get"},
+    ]
+    tester.run_tests(endpoints, "userId", "123", "http://localhost", "/api")
+    assert all(m == "get" for m in called_methods)
+    assert len(called_methods) == 3
+
+
+def test_bola_root_base_path_url_building(monkeypatch):
+    args = argparse.Namespace(verbose=False, product=True, risk=False)
+    session = requests.Session()
+    tester = BolaTester(args, session)
+
+    called_urls = []
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.content = b"ok"
+
+    def mock_request(method, url, **kwargs):
+        called_urls.append(url)
+        return mock_resp
+
+    monkeypatch.setattr(session, "request", mock_request)
+    full_url, _ = tester._send_request("GET", "http://localhost:8080", "/", "/users/{userId}", "userId", "123")
+    assert full_url == "http://localhost:8080/users/123"
+    assert called_urls == ["http://localhost:8080/users/123"]
+
+
+def test_bola_json_comparison_and_multi_param_paths(monkeypatch):
+    import json
+    args = argparse.Namespace(verbose=False, product=True, risk=False)
+    session = requests.Session()
+    tester = BolaTester(args, session)
+
+    # Identical JSON object returned across IDs (e.g. /me behavior ignoring param) -> False
+    resp_a = MagicMock(status_code=200, content=json.dumps({"id": 123, "name": "Alice"}).encode())
+    resp_same = MagicMock(status_code=200, content=json.dumps({"id": 123, "name": "Alice"}).encode())
+    assert tester._compare_responses(resp_a, resp_same) is False
+
+    # Same schema structure with >50% length difference -> True (avoid false negative)
+    resp_other = MagicMock(status_code=200, content=json.dumps({"id": 124, "name": "Bob " + ("x" * 200)}).encode())
+    assert tester._compare_responses(resp_a, resp_other) is True
+
+    # Soft JSON error envelope with status 200 -> False
+    resp_err = MagicMock(status_code=200, content=b'{"error": "Forbidden", "success": false}')
+    assert tester._compare_responses(resp_a, resp_err) is False
+
+    # Multi-parameter path substitution
+    called_urls = []
+    monkeypatch.setattr(session, "request", lambda m, url, **kw: called_urls.append(url) or resp_a)
+    full_url, _ = tester._send_request("GET", "http://localhost:8080", "/api", "/orgs/{orgId}/users/{userId}", "userId", "123")
+    assert full_url == "http://localhost:8080/api/orgs/1/users/123"
+    assert called_urls == ["http://localhost:8080/api/orgs/1/users/123"]
+
+    # JSON lists comparison and JSON vs plain-text mismatch
+    list_a = MagicMock(status_code=200, content=b'[{"id": 1}]')
+    list_b = MagicMock(status_code=200, content=b'[{"id": 2}]')
+    assert tester._compare_responses(list_a, list_b) is True
+    assert tester._compare_responses(list_a, MagicMock(status_code=200, content=b"not json")) is False
+
