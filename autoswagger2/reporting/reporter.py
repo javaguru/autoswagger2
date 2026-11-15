@@ -12,6 +12,7 @@ class Reporter:
     def __init__(self, args):
         self.args = args
         self.console = Console()
+        self.diff_report = None
 
     def _get_severity_score(self, severity_str):
         levels = {"info": 0, "low": 1, "medium": 2, "high": 3, "critical": 4}
@@ -73,7 +74,7 @@ class Reporter:
         grouped_results = {}
         for r in all_results:
             if r:
-                key = (r['method'], r['path_template'])
+                key = (r['method'], r.get('path_template') or r.get('url', ''))
                 existing = grouped_results.get(key)
                 if not existing or self._result_priority(r) > self._result_priority(existing):
                     grouped_results[key] = r
@@ -101,6 +102,8 @@ class Reporter:
                 self._print_bopla_table(bopla_results)
             if urc_results:
                 self._print_urc_table(urc_results)
+            if self.diff_report:
+                self._print_diff_table(self.diff_report)
 
     def _print_table(self, final_results, stats):
         """
@@ -468,10 +471,93 @@ class Reporter:
                 html += f"<tr><td class='crit'>{safe_cat}</td><td>{safe_mthd}</td><td>{safe_ep}</td><td>{safe_st}</td><td>{safe_det}</td></tr>"
             html += "</table>"
 
+        if isinstance(self.diff_report, dict):
+            html += "<h3>Baseline Comparison (--diff)</h3>"
+            html += "<table><tr><th>Change</th><th>Method</th><th>Endpoint / URL</th><th>Severity</th><th>Details</th></tr>"
+            for ep in self.diff_report.get("new_endpoints", []):
+                html += (
+                    f"<tr><td class='warn'>NEW</td>"
+                    f"<td>{html_lib.escape(str(ep.get('method', '')), quote=True)}</td>"
+                    f"<td>{html_lib.escape(str(ep.get('url', '')), quote=True)}</td>"
+                    f"<td>{html_lib.escape(str(ep.get('severity', '')), quote=True)}</td>"
+                    f"<td>{html_lib.escape(str(ep.get('details', '')), quote=True)}</td></tr>"
+                )
+            for reg in self.diff_report.get("regressions", []):
+                reasons = "; ".join(str(x) for x in reg.get("reasons", []))
+                html += (
+                    f"<tr><td class='crit'>REGRESSION</td>"
+                    f"<td>{html_lib.escape(str(reg.get('method', '')), quote=True)}</td>"
+                    f"<td>{html_lib.escape(str(reg.get('url', '')), quote=True)}</td>"
+                    f"<td>{html_lib.escape(str(reg.get('severity', '')), quote=True)}</td>"
+                    f"<td>{html_lib.escape(reasons, quote=True)}</td></tr>"
+                )
+            for av in self.diff_report.get("new_active_vulns", []):
+                html += (
+                    f"<tr><td class='crit'>NEW {html_lib.escape(str(av.get('category', '')), quote=True)}</td>"
+                    f"<td>{html_lib.escape(str(av.get('method', '')), quote=True)}</td>"
+                    f"<td>{html_lib.escape(str(av.get('endpoint', '')), quote=True)}</td>"
+                    f"<td>{html_lib.escape(str(av.get('severity', '')), quote=True)}</td>"
+                    f"<td>New active vulnerability</td></tr>"
+                )
+            for res_item in self.diff_report.get("resolved_issues", []):
+                reasons = "; ".join(str(x) for x in res_item.get("reasons", []))
+                html += (
+                    f"<tr><td>RESOLVED</td>"
+                    f"<td>{html_lib.escape(str(res_item.get('method', '')), quote=True)}</td>"
+                    f"<td>{html_lib.escape(str(res_item.get('url', '')), quote=True)}</td>"
+                    f"<td>info</td>"
+                    f"<td>{html_lib.escape(reasons, quote=True)}</td></tr>"
+                )
+            html += "</table>"
+
         html += "</body></html>"
         with open(outfile, 'w', encoding='utf-8') as f:
             f.write(html)
         log(f"Results exported to HTML: {outfile}", level="SUCCESS")
+
+    def _print_diff_table(self, diff_report):
+        summary = diff_report.get("summary", {})
+        rows = []
+        for ep in diff_report.get("new_endpoints", []):
+            rows.append(("[bold yellow]NEW[/bold yellow]", ep.get("method", ""), ep.get("url", ""), ep.get("severity", ""), ep.get("details", "")))
+        for reg in diff_report.get("regressions", []):
+            rows.append(("[bold red]REGRESSION[/bold red]", reg.get("method", ""), reg.get("url", ""), reg.get("severity", ""), "; ".join(reg.get("reasons", []))))
+        for av in diff_report.get("new_active_vulns", []):
+            rows.append((f"[bold red]NEW {av.get('category', '')}[/bold red]", av.get("method", ""), av.get("endpoint", ""), av.get("severity", ""), "Newly vulnerable"))
+        for res_item in diff_report.get("resolved_issues", []):
+            rows.append(("[bold green]RESOLVED[/bold green]", res_item.get("method", ""), res_item.get("url", ""), "info", "; ".join(res_item.get("reasons", []))))
+        for rem in diff_report.get("removed_endpoints", []):
+            rows.append(("REMOVED", rem.get("method", ""), rem.get("url", ""), "info", f"Previously HTTP {rem.get('status_code', '')}"))
+
+        if not rows:
+            log("Baseline Diff: No changes detected compared to baseline.", level="SUCCESS")
+            return
+
+        table = Table(
+            title=(
+                f"Baseline Diff Summary (New: {summary.get('new_endpoints_count', 0)}, "
+                f"Regressions: {summary.get('regressions_count', 0)}, "
+                f"Resolved: {summary.get('resolved_issues_count', 0)})"
+            ),
+            show_lines=False,
+        )
+        table.add_column("Change", no_wrap=True)
+        table.add_column("Method", style="cyan", no_wrap=True)
+        table.add_column("URL / Endpoint", style="green", overflow="fold")
+        table.add_column("Severity", style="magenta")
+        table.add_column("Details", overflow="fold")
+        for r in rows:
+            table.add_row(*[str(col) for col in r])
+        self.console.print(table)
+
+    def _write_or_print_json_payload(self, output):
+        outfile = getattr(self.args, "out", None)
+        if isinstance(outfile, str) and outfile.strip():
+            with open(outfile.strip(), "w", encoding="utf-8") as f:
+                json.dump(output, f, indent=2)
+            log(f"Results exported to JSON: {outfile.strip()}", level="SUCCESS")
+        else:
+            self.console.print_json(data=output)
 
     def _print_json(self, final_results, stats, bola_results=None, bfla_results=None, bopla_results=None, urc_results=None):
         output = {"results": final_results}
@@ -483,9 +569,11 @@ class Reporter:
             output["bopla_findings"] = bopla_results
         if urc_results:
             output["urc_findings"] = urc_results
+        if self.diff_report:
+            output["diff"] = self.diff_report
         if self.args.stats:
             output["stats"] = stats
-        self.console.print_json(data=output)
+        self._write_or_print_json_payload(output)
 
     def _print_product_json(self, all_results, stats, bola_results=None, bfla_results=None, bopla_results=None, urc_results=None):
         final_results = [r for r in all_results if r and (r.get('pii_detected') or r.get('interesting_response'))]
@@ -506,9 +594,11 @@ class Reporter:
             output["bopla_findings"] = [res for res in bopla_results if res['vulnerable']]
         if urc_results:
             output["urc_findings"] = [res for res in urc_results if res['vulnerable']]
+        if self.diff_report:
+            output["diff"] = self.diff_report
         if self.args.stats:
             output["stats"] = stats
-        self.console.print_json(data=output)
+        self._write_or_print_json_payload(output)
 
     def print_stats(self, stats):
         stats_table = Table(title="Scan Statistics", show_lines=False)

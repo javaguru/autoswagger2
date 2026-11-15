@@ -11,10 +11,11 @@ from dicttoxml import dicttoxml
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import os
 
-from ..utils.config import TEST_VALUES
+from ..utils.config import TEST_VALUES, SAFE_HTTP_METHODS
 from ..utils.rate_limiter import get_rate_limiter
 from ..analysis.secrets import detect_sensitive_info
 from ..analysis.pii import PiiAnalyzer
+from ..analysis.contract_auditor import ContractAuditor
 from ..utils.helpers import (
     log,
     is_quiet_output,
@@ -37,6 +38,7 @@ class Requester:
         self.pii_analyzer = PiiAnalyzer()
         self.validator = ResultValidator()
         self.param_analyzer = ParameterAnalyzer()
+        self.contract_auditor = ContractAuditor(args, session)
         self.TIMEOUT = 10
         self._lock = threading.Lock()
         self.TOTAL_REQUESTS = 0
@@ -94,18 +96,18 @@ class Requester:
 
                         if ep_type == 'webhook':
                             webhook_name = ep.get('webhook_name', 'unknown')
-                            fut = executor.submit(self._test_webhook, path, mthd, parameters, base_path, request_body, ct, webhook_name)
+                            fut = executor.submit(self._test_webhook, path, mthd, parameters, base_path, request_body, ct, webhook_name, operation=operation)
                             future_to_endpoint[fut] = (mthd, f"[WEBHOOK] {path}", ct)
                         else:
-                            fut = executor.submit(self._test_endpoint, path, mthd, parameters, base_path, request_body, ct)
+                            fut = executor.submit(self._test_endpoint, path, mthd, parameters, base_path, request_body, ct, operation=operation)
                             future_to_endpoint[fut] = (mthd, path, ct)
                 else:
                     if ep_type == 'webhook':
                         webhook_name = ep.get('webhook_name', 'unknown')
-                        fut = executor.submit(self._test_webhook, path, mthd, parameters, base_path, None, None, webhook_name)
+                        fut = executor.submit(self._test_webhook, path, mthd, parameters, base_path, None, None, webhook_name, operation=operation)
                         future_to_endpoint[fut] = (mthd, f"[WEBHOOK] {path}", None)
                     else:
-                        fut = executor.submit(self._test_endpoint, path, mthd, parameters, base_path, None, None)
+                        fut = executor.submit(self._test_endpoint, path, mthd, parameters, base_path, None, None, operation=operation)
                         future_to_endpoint[fut] = (mthd, path, None)
 
             #  Collect results
@@ -120,7 +122,7 @@ class Requester:
 
         return all_results
 
-    def _test_webhook(self, expression, method, parameters, base_path, request_body=None, content_type=None, webhook_name=None):
+    def _test_webhook(self, expression, method, parameters, base_path, request_body=None, content_type=None, webhook_name=None, operation=None):
         """Test webhook endpoint (OpenAPI 3.1)"""
         # Webhooks use Runtime Expressions in OpenAPI 3.1
         # Skip unresolved variables like {$request.body#/callbackUrl}
@@ -145,11 +147,114 @@ class Requester:
         if not is_quiet_output(self.args):
             log(f"Testing webhook '{webhook_name}': {method.upper()} {expression}", level="INFO")
 
-        return self._test_parameter_values(method, base_url_no_path, full_path, parameters, request_body, content_type)
+        responses = self._test_parameter_values(method, base_url_no_path, full_path, parameters, request_body, content_type)
+        if getattr(self.args, 'audit_contract', False) is True and isinstance(operation, dict) and responses:
+            self._audit_contract_on_responses(responses, method, operation, request_body, content_type)
+        return responses
 
-    def _test_endpoint(self, path_template, method, parameters, base_path, request_body=None, content_type=None):
+    def _test_endpoint(self, path_template, method, parameters, base_path, request_body=None, content_type=None, operation=None):
         full_path = join_base_and_path(base_path, path_template)
-        return self._test_parameter_values(method, self.api_base_url, full_path, parameters, request_body, content_type)
+        responses = self._test_parameter_values(method, self.api_base_url, full_path, parameters, request_body, content_type)
+        if getattr(self.args, 'audit_contract', False) is True and isinstance(operation, dict) and responses:
+            self._audit_contract_on_responses(responses, method, operation, request_body, content_type)
+        return responses
+
+    def _audit_contract_on_responses(self, responses, method, operation, request_body=None, content_type=None):
+        spec = getattr(self, '_current_spec', {})
+        required_schemes = self.contract_auditor.get_required_security_schemes(operation, spec)
+        has_creds = self.contract_auditor.has_session_credentials()
+        unauth_checked = False
+        unauth_is_public = False
+
+        for res in responses:
+            if not isinstance(res, dict):
+                continue
+            sc = res.get('status_code', 0)
+            if not (200 <= sc < 300):
+                continue
+
+            resp_headers = res.get('response_headers') or {}
+            ct_hdr = resp_headers.get('Content-Type') or resp_headers.get('content-type') or ''
+            body_text = res.get('response_body', '') or ''
+            auth_drift = False
+
+            if required_schemes and not self.contract_auditor.is_soft_auth_failure(body_text, ct_hdr):
+                if not has_creds:
+                    auth_drift = True
+                elif not unauth_checked:
+                    unauth_checked = True
+                    if method.lower() in SAFE_HTTP_METHODS or bool(getattr(self.args, 'risk', False)):
+                        unauth_is_public = self._verify_unauthenticated_access(
+                            method, res.get('url', ''), request_body, content_type
+                        )
+                    auth_drift = unauth_is_public
+                else:
+                    auth_drift = unauth_is_public
+
+            undoc_fields = self.contract_auditor.find_undocumented_response_fields(
+                operation, sc, body_text, ct_hdr, spec
+            )
+
+            indicators = list(res.get('vuln_indicators') or [])
+            if auth_drift:
+                drift_msg = f"Contract Auth Drift: Declared Protected ({', '.join(required_schemes)}) but Public"
+                if drift_msg not in indicators:
+                    indicators.append(drift_msg)
+
+            if undoc_fields:
+                shown = ', '.join(undoc_fields[:6]) + ('...' if len(undoc_fields) > 6 else '')
+                has_sensitive = any(self.contract_auditor.is_sensitive_field_name(f) for f in undoc_fields)
+                prefix_lbl = (
+                    "Contract Drift (Sensitive Undocumented Fields)"
+                    if has_sensitive
+                    else "Contract Drift (Undocumented Response Fields)"
+                )
+                field_msg = f"{prefix_lbl}: {shown}"
+                if field_msg not in indicators:
+                    indicators.append(field_msg)
+
+            if auth_drift or undoc_fields:
+                res['vuln_indicators'] = indicators
+                res['interesting_response'] = True
+                res['contract_drift'] = {
+                    'auth_drift': auth_drift,
+                    'undocumented_fields': undoc_fields,
+                }
+
+    def _verify_unauthenticated_access(self, method, full_url, request_body=None, content_type=None):
+        if not full_url:
+            return False
+        origin_to_check = getattr(self, 'auth_origin', None) or self.api_base_url
+        if origin_to_check and not is_same_origin_host(origin_to_check, full_url):
+            if not getattr(self.args, 'allow_external', False):
+                return False
+
+        extra = {'Content-Type': content_type} if content_type and content_type != 'multipart/form-data' else {}
+        headers = self.contract_auditor.build_unauthenticated_headers(extra)
+        data_payload = request_body if method.upper() in ('POST', 'PUT', 'PATCH') and content_type != 'multipart/form-data' else None
+        files_payload = request_body if method.upper() in ('POST', 'PUT', 'PATCH') and content_type == 'multipart/form-data' else None
+
+        try:
+            get_rate_limiter(self.args).wait()
+            with self._lock:
+                self.TOTAL_REQUESTS += 1
+            resp = self.session.request(
+                method,
+                full_url,
+                headers=headers,
+                cookies={},
+                data=data_payload,
+                files=files_payload,
+                allow_redirects=False,
+                timeout=self.TIMEOUT,
+            )
+            if resp is None or not (200 <= resp.status_code < 300):
+                return False
+            ct_hdr = resp.headers.get('Content-Type', '')
+            text = (resp.content or b'').decode('utf-8', errors='ignore')
+            return not self.contract_auditor.is_soft_auth_failure(text, ct_hdr)
+        except requests.exceptions.RequestException:
+            return False
 
     def _test_parameter_values(self, method, base_url_no_path, full_path, parameters, request_body, content_type):
         all_responses = []

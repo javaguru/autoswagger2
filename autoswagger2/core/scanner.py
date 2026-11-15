@@ -11,8 +11,10 @@ from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TimeEl
 
 from ..discovery.finder import SpecFinder
 from ..discovery.hidden_finder import HiddenEndpointFinder
+from ..discovery.shadow_version_finder import ShadowVersionFinder
 from .requester import Requester
 from ..reporting.reporter import Reporter
+from ..reporting.diff_engine import DiffEngine, SCORE_TO_LABEL
 from ..analysis.bola import BolaTester
 from ..analysis.bfla import BflaTester
 from ..analysis.bopla import BoplaTester
@@ -46,6 +48,10 @@ class Scanner:
         }
         if getattr(args, "hidden", False) is True:
             self.stats["undocumented_endpoints_found"] = 0
+        if getattr(args, "shadow_versions", False) is True:
+            self.stats["shadow_endpoints_found"] = 0
+        self.diff_report = None
+        self.exit_code = 0
         self.TOTAL_REQUESTS = 0
 
     def _get_max_workers(self):
@@ -159,7 +165,46 @@ class Scanner:
 
         end_time = time.time()
         self._calculate_stats(start_time, end_time)
+
+        diff_path = getattr(self.args, "diff", None)
+        if isinstance(diff_path, str) and diff_path.strip():
+            try:
+                diff_engine = DiffEngine()
+                baseline_data = diff_engine.load_baseline(diff_path.strip())
+                self.diff_report = diff_engine.compute_diff(
+                    baseline_data,
+                    self.all_results,
+                    bola_results=self.bola_results,
+                    bfla_results=self.bfla_results,
+                    bopla_results=self.bopla_results,
+                    urc_results=self.urc_results,
+                )
+                self.reporter.diff_report = self.diff_report
+            except Exception as exc:
+                if not is_quiet_output(self.args):
+                    log(f"Failed to compute baseline diff against {diff_path}: {exc}", level="WARNING")
+
         self.reporter.print_results(self.all_results, self.stats, self.bola_results, self.bfla_results, self.bopla_results, self.urc_results)
+
+        fail_on = getattr(self.args, "fail_on", None)
+        if isinstance(fail_on, str) and fail_on.strip():
+            should_fail, max_score, match_count = DiffEngine.evaluate_fail_on(
+                fail_on,
+                self.all_results,
+                bola_results=self.bola_results,
+                bfla_results=self.bfla_results,
+                bopla_results=self.bopla_results,
+                urc_results=self.urc_results,
+                diff_report=self.diff_report,
+            )
+            if should_fail:
+                self.exit_code = 1
+                if not is_quiet_output(self.args):
+                    scope_note = "new/regressed finding(s)" if self.diff_report is not None else "finding(s)"
+                    log(
+                        f"CI gate triggered (--fail-on {fail_on}): {match_count} {scope_note} at or above '{fail_on}' (max severity: {SCORE_TO_LABEL.get(max_score, 'unknown')}).",
+                        level="CRITICAL",
+                    )
 
     def process_url(self, base_url):
         with self._lock:
@@ -218,14 +263,37 @@ class Scanner:
                 finally:
                     self._add_request_count(hidden_finder)
 
+            shadow_results = []
+            if getattr(self.args, "shadow_versions", False) is True:
+                excluded_paths = {r.get("path_template") for r in hidden_results if r.get("path_template")}
+                shadow_finder = ShadowVersionFinder(
+                    api_base_url=api_base_url,
+                    base_path=base_path,
+                    args=self.args,
+                    session=self.session,
+                    auth_origin=target_origin,
+                    spec_url=spec_url,
+                )
+                shadow_finder.max_workers = requester.max_workers
+                try:
+                    shadow_results = shadow_finder.discover_shadow_versions(
+                        swagger_spec, excluded_paths=excluded_paths
+                    )
+                finally:
+                    self._add_request_count(shadow_finder)
+
             try:
                 documented_results = requester.test_endpoints(swagger_spec, base_path)
             finally:
                 self._add_request_count(requester)
 
-            results = hidden_results + (documented_results or [])
+            results = hidden_results + shadow_results + (documented_results or [])
             if results:
-                self._record_endpoint_results(results, undocumented_count=len(hidden_results))
+                self._record_endpoint_results(
+                    results,
+                    undocumented_count=len(hidden_results),
+                    shadow_count=len(shadow_results),
+                )
         else:
             if not is_quiet_output(self.args):
                 log(f"No spec found for {base_url}.", level="INFO")
@@ -251,7 +319,7 @@ class Scanner:
                     if hidden_results:
                         self._record_endpoint_results(hidden_results, undocumented_count=len(hidden_results))
 
-    def _record_endpoint_results(self, results, undocumented_count=0):
+    def _record_endpoint_results(self, results, undocumented_count=0, shadow_count=0):
         host_has_pii = False
         pii_types = set()
         regex_values = set()
@@ -273,6 +341,8 @@ class Scanner:
                 self.stats["hosts_with_pii"] += 1
             if undocumented_count and "undocumented_endpoints_found" in self.stats:
                 self.stats["undocumented_endpoints_found"] += undocumented_count
+            if shadow_count and "shadow_endpoints_found" in self.stats:
+                self.stats["shadow_endpoints_found"] += shadow_count
             self.stats["pii_detection_methods"].update(pii_types)
             self.stats["regexes_found"].update(regex_values)
 

@@ -57,6 +57,8 @@ def run():
     scan_group.add_argument("--cache-ttl", type=int, default=3600, help="Specification cache TTL in seconds (default: 3600).")
     scan_group.add_argument("--hidden", action="store_true", help="Discover undocumented endpoints (e.g., Spring @Hidden routes) via dictionary probing before scanning documented paths.")
     scan_group.add_argument("--hidden-wordlist", metavar="FILE", default=None, help="Custom wordlist file (one path suffix per line) to include during --hidden discovery.")
+    scan_group.add_argument("--shadow-versions", action="store_true", help="Discover undocumented sibling/zombie API versions (e.g., /v1, /v0, /beta) derived from versioned paths in the schema.")
+    scan_group.add_argument("--audit-contract", action="store_true", help="Audit runtime responses against the OpenAPI contract (Auth Drift on protected routes + undocumented response JSON fields).")
 
 
     # Authentication Options
@@ -81,8 +83,10 @@ def run():
     output_group.add_argument("-csv", action="store_true", help="Output results in CSV format.")
     output_group.add_argument("-sarif", action="store_true", help="Output results in SARIF format.")
     output_group.add_argument("-html", action="store_true", help="Output results in HTML format.")
-    output_group.add_argument("--out", metavar="FILE", help="Save output to file (used with -csv, -sarif, -html).")
+    output_group.add_argument("--out", metavar="FILE", help="Save output to file (used with -json, -product, -csv, -sarif, -html).")
     output_group.add_argument("-severity", choices=["critical", "high", "medium", "low"], help="Filter results by minimum severity level (critical, high, medium, low).")
+    output_group.add_argument("--diff", metavar="FILE", default=None, help="Compare current scan against a previous JSON report baseline and highlight new exposures or regressions.")
+    output_group.add_argument("--fail-on", choices=["critical", "high", "medium", "low"], default=None, help="Exit with code 1 if findings (or new/regressed findings when --diff is used) meet or exceed this severity.")
 
     args = parser.parse_args()
     args.threads = max(1, min(100, args.threads))
@@ -157,6 +161,9 @@ def run():
     get_rate_limiter(args)
     scanner = Scanner(urls, args, req_session)
     scanner.run()
+    exit_code = getattr(scanner, "exit_code", 0)
+    if isinstance(exit_code, int) and not isinstance(exit_code, bool) and exit_code != 0:
+        sys.exit(exit_code)
 
 if __name__ == '__main__':
     run()

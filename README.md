@@ -39,7 +39,9 @@ This software is provided "as is," without warranty of any kind, express or impl
 
 * **Advanced Specification Discovery:** Employs a multi-phase discovery process (direct parsing, Swagger UI HTML and JavaScript resource inspection, context-aware path probing, and root fallback), ensuring compatibility with modern frameworks such as Spring Boot. Includes an **atomic SHA-256 disk cache** with configurable TTL (`--cache-ttl`, default `3600s`) and explicit bypass (`--no-cache`).
 
-* **Undocumented / `@Hidden` Endpoint Discovery (`--hidden`):** Before scanning documented OpenAPI paths, optionally inventories undocumented routes omitted from the schema (e.g., SpringDoc `@Hidden`, `@ApiIgnore`, or `include_in_schema=False` controllers such as `/v1/echo` or `/actuator/env`). Derives version/namespace prefixes directly from the OpenAPI specification, filters SPA/catch-all soft-404s via per-prefix canary baselines, recovers missing query parameters on `400`/`422`, detects `405` non-`GET` routes (`Allow` header), and supports custom route lists via `--hidden-wordlist FILE`.
+* **Undocumented / `@Hidden` Endpoint & Shadow Version Discovery (`--hidden`, `--shadow-versions`):** Before scanning documented OpenAPI paths, optionally inventories undocumented routes omitted from the schema (e.g., SpringDoc `@Hidden`, `@ApiIgnore`, or `include_in_schema=False` controllers such as `/v1/echo` or `/actuator/env`) as well as **deprecated/zombie sibling API versions** (`--shadow-versions`, e.g., `/v1/users`, `/v0/users`, `/beta/users` derived from `/v2/users`). Uses per-prefix canary baselines to eliminate SPA/catch-all soft-404s, recovers missing query parameters on `400`/`422`, detects `405` non-`GET` routes (`Allow` header), and supports custom route lists via `--hidden-wordlist FILE`.
+
+* **OpenAPI Contract vs. Runtime Drift Auditing (`--audit-contract`):** Detects **Authentication Drift** (OWASP API2: routes declaring `security` requirements in OpenAPI that actually respond `2xx` without credentials) and **Excessive Data Exposure / Response Schema Drift** (OWASP API3: extra JSON properties returned at runtime—such as `passwordHash` or `internalRole`—that are absent from the documented `responses` DTO schema).
 
 * **Extensive OpenAPI Support:** Precise version detection (Swagger 2.0, OpenAPI 3.0.x, OpenAPI 3.1), **recursive `$ref` resolution with cycle detection**, `allOf` / `oneOf` / `anyOf` schema composition, OpenAPI 3.1 type arrays (e.g., `["string", "null"]`), `servers` template variable expansion, path/operation parameter merging, `multipart/form-data` payloads, and native support for OpenAPI 3.1 Webhooks (safely skipping unresolved runtime expressions).
 
@@ -61,7 +63,7 @@ This software is provided "as is," without warranty of any kind, express or impl
 
 * **Support for Authenticated Scanning:** Credentials can be supplied via custom headers (`-H` / `--header`), `--api-key`, or `--api-key-src` (reading long tokens from a file).
 
-* **Structured Reporting:** Presents findings in Rich console tables, JSON (`-json` / `-product`), CSV (`-csv`), SARIF (`-sarif`), or HTML (`-html`), with severity filtering (`-severity critical|high|medium|low`) and runtime statistics (`-stats`).
+* **Structured Reporting & CI/CD Regression Gating:** Presents findings in Rich console tables, JSON (`-json` / `-product`), CSV (`-csv`), SARIF (`-sarif`), or HTML (`-html`), with severity filtering (`-severity`), **JSON baseline regression comparison (`--diff baseline.json`)**, and **automated CI/CD exit-code gating (`--fail-on {critical,high,medium,low}`)** alongside runtime statistics (`-stats`).
 
 * **High-Performance Concurrency & Rate Limiting:** Lazy thread-safe SpaCy/Presidio engine singleton, bounded `HTTPAdapter` connection pooling, URL-to-endpoint thread budget splitting (`-t` / `--threads`, default `20`, max `100`), a thread-safe global rate limiter (`-rate`, default `30` req/s), and automatic retries with exponential backoff.
 
@@ -113,11 +115,13 @@ usage: autoswagger2 [-h] [-V] [-v] [-rate RATE] [-k]
                     [--test-bfla] [--test-bopla] [--test-urc]
                     [--allow-external] [-t THREADS] [--no-cache]
                     [--cache-ttl CACHE_TTL] [--hidden]
-                    [--hidden-wordlist FILE] [-H] [--api-key] [--api-key-src]
+                    [--hidden-wordlist FILE] [--shadow-versions]
+                    [--audit-contract] [-H] [--api-key] [--api-key-src]
                     [--key-header] [--key-prefix] [--user-agent UA] [--bola]
                     [--bola-id "param=id"] [-product] [-stats] [-json] [-csv]
                     [-sarif] [-html] [--out FILE]
-                    [-severity {critical,high,medium,low}]
+                    [-severity {critical,high,medium,low}] [--diff FILE]
+                    [--fail-on {critical,high,medium,low}]
                     [urls ...]
 
 AutoSwagger2: Detect unauthenticated access control issues via Swagger2/OpenAPI documentation.
@@ -150,6 +154,8 @@ Scan Behavior:
   --hidden              Discover undocumented endpoints (e.g., Spring @Hidden routes) via dictionary probing before scanning documented paths.
   --hidden-wordlist FILE
                         Custom wordlist file (one path suffix per line) to include during --hidden discovery.
+  --shadow-versions     Discover undocumented sibling/zombie API versions (e.g., /v1, /v0, /beta) derived from versioned paths in the schema.
+  --audit-contract      Audit runtime responses against the OpenAPI contract (Auth Drift on protected routes + undocumented response JSON fields).
 
 Authentication:
   -H , --header         Add a custom Key:Value header to all requests (e.g., "Authorization: Bearer ...")
@@ -170,9 +176,12 @@ Output:
   -csv                  Output results in CSV format.
   -sarif                Output results in SARIF format.
   -html                 Output results in HTML format.
-  --out FILE            Save output to file (used with -csv, -sarif, -html).
+  --out FILE            Save output to file (used with -json, -product, -csv, -sarif, -html).
   -severity {critical,high,medium,low}
                         Filter results by minimum severity level (critical, high, medium, low).
+  --diff FILE           Compare current scan against a previous JSON report baseline and highlight new exposures or regressions.
+  --fail-on {critical,high,medium,low}
+                        Exit with code 1 if findings (or new/regressed findings when --diff is used) meet or exceed this severity.
 ```
 
 ## Discovery Phases
@@ -223,6 +232,27 @@ python -m autoswagger2 https://api.example.com --hidden -stats
 
 # Include non-GET @Hidden routes (-risk) and a custom wordlist file
 python -m autoswagger2 https://api.example.com --hidden --hidden-wordlist custom-routes.txt -risk -stats
+```
+
+## Shadow / Zombie API Version Discovery (`--shadow-versions`)
+
+Deprecated API versions (`/v1`, `/v0`, `/beta`) frequently remain mounted alongside newer versions (`/v2`, `/v3`) without the latest authentication or DTO filtering controls (OWASP API9).
+
+When `--shadow-versions` is enabled, `AutoSwagger2` inspects all versioned routes in the OpenAPI schema (both in `paths` and in `servers` / `basePath`), substitutes sibling version segments (`v(N-1)..v0`, `v(N+1)`, `beta`) while skipping versions already documented in the spec, filters catch-alls with per-version canary probes, and runs full PII/Secret/Debug analysis on any live shadow version.
+
+```bash
+python -m autoswagger2 https://api.example.com --hidden --shadow-versions -stats
+```
+
+## OpenAPI Contract vs. Runtime Drift Auditing (`--audit-contract`)
+
+`--audit-contract` verifies whether the live server honors the security and data-exposure guarantees declared in its own OpenAPI specification:
+
+1. **Contract Auth Drift (OWASP API2):** Identifies operations that declare non-optional `security` schemes (`bearerAuth`, `apiKey`, etc.) in OpenAPI (globally or per operation) yet return a valid `2xx` payload without credentials. Works with zero extra requests during unauthenticated scans, or sends a single stripped verification request per `2xx` protected route during authenticated scans.
+2. **Response Schema Drift / Excessive Data Exposure (OWASP API3):** Recursively compares JSON keys returned in `2xx` responses against the documented `responses` schema (`$ref`, `allOf`, `oneOf`, `anyOf`, nested objects, and arrays), flagging undocumented fields—with elevated labeling for sensitive property names (`passwordHash`, `secret`, `token`, `role`, `ssn`, etc.) while ignoring free-form maps (`additionalProperties`).
+
+```bash
+python -m autoswagger2 https://api.example.com --audit-contract -stats
 ```
 
 ## Endpoint Testing
@@ -422,13 +452,26 @@ python -m autoswagger2 https://api.example.com \
 
 *(Tip: use `--allow-external` only if the spec intentionally delegates endpoints or webhooks to trusted external hosts; credential headers remain stripped cross-origin.)*
 
-### 4. CI/CD Gate with SARIF & Severity Filtering
+### 4. CI/CD Regression Gate (`--diff`, `--fail-on` & SARIF)
 
-Export critical/high findings in SARIF for GitHub Security Alerts or GitLab/IDE triage:
+Save a clean UTF-8 JSON baseline, then compare subsequent Pull Request / staging builds against that baseline and fail the pipeline (`exit 1`) only when new or regressed `high`/`critical` findings appear:
 
 ```bash
+# Step A: Save an initial baseline report
+python -m autoswagger2 https://api.example.com --hidden --audit-contract -json --out baseline.json
+
+# Step B: In CI/CD, diff against baseline.json and fail (exit 1) on new/regressed high+ findings
 python -m autoswagger2 https://api.example.com \
-  -severity critical \
+  --hidden \
+  --shadow-versions \
+  --audit-contract \
+  --diff baseline.json \
+  --fail-on high
+
+# Optional: Export critical/high findings in SARIF for GitHub Security Alerts
+python -m autoswagger2 https://api.example.com \
+  -severity high \
+  --fail-on critical \
   -sarif --out sarif-report.sarif
 ```
 

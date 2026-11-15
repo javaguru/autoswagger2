@@ -197,7 +197,32 @@ def test_main_hidden_and_hidden_wordlist_flags(tmp_path):
     test_args_flag = ["autoswagger2", "http://localhost:8082/nexus-backend", "--hidden"]
     with patch.object(sys, 'argv', test_args_flag), \
          patch('autoswagger2.__main__.Scanner') as MockScanner:
+        MockScanner.return_value.exit_code = 0
         run()
         parsed_args = MockScanner.call_args[0][1]
         assert parsed_args.hidden is True
         assert parsed_args.hidden_wordlist is None
+
+
+def test_main_contract_shadow_diff_and_fail_on_exit_code():
+    test_args = [
+        "autoswagger2",
+        "http://localhost:8082/nexus-backend",
+        "--shadow-versions",
+        "--audit-contract",
+        "--diff",
+        "baseline.json",
+        "--fail-on",
+        "high",
+    ]
+    with patch.object(sys, 'argv', test_args), \
+         patch('autoswagger2.__main__.Scanner') as MockScanner:
+        MockScanner.return_value.exit_code = 1
+        with pytest.raises(SystemExit) as exc_info:
+            run()
+        assert exc_info.value.code == 1
+        parsed_args = MockScanner.call_args[0][1]
+        assert parsed_args.shadow_versions is True
+        assert parsed_args.audit_contract is True
+        assert parsed_args.diff == "baseline.json"
+        assert parsed_args.fail_on == "high"
