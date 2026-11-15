@@ -27,12 +27,15 @@ def _remove_quietly(path):
         pass
 
 
+_CACHE_IO_LOCK = threading.RLock()
+
+
 class SpecCache:
     def __init__(self, cache_dir="~/.autoswagger2/cache", ttl=3600, enabled=True):
         self.cache_dir = os.path.expanduser(cache_dir)
         self.ttl = _normalize_ttl(ttl)
         self.enabled = bool(enabled)
-        self._lock = threading.Lock()
+        self._lock = _CACHE_IO_LOCK
         if self.enabled:
             os.makedirs(self.cache_dir, exist_ok=True)
 
@@ -48,29 +51,32 @@ class SpecCache:
             return None
 
         cache_path = self._cache_path(url)
-        try:
-            stat = os.stat(cache_path)
-        except OSError:
-            return None
+        with self._lock:
+            try:
+                stat = os.stat(cache_path)
+            except OSError:
+                return None
 
-        if self.ttl is not None:
-            age = time.time() - stat.st_mtime
-            if self.ttl <= 0.0 or age > self.ttl:
+            if self.ttl is not None:
+                age = time.time() - stat.st_mtime
+                if self.ttl <= 0.0 or age > self.ttl:
+                    _remove_quietly(cache_path)
+                    return None
+
+            try:
+                with open(cache_path, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+            except (json.JSONDecodeError, ValueError, UnicodeDecodeError):
+                _remove_quietly(cache_path)
+                return None
+            except OSError:
+                return None
+
+            if not isinstance(data, dict):
                 _remove_quietly(cache_path)
                 return None
 
-        try:
-            with open(cache_path, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-        except Exception:
-            _remove_quietly(cache_path)
-            return None
-
-        if not isinstance(data, dict):
-            _remove_quietly(cache_path)
-            return None
-
-        return data
+            return data
 
     def cache_spec(self, url, spec):
         """Atomically stores discovered specs in the cache when enabled."""

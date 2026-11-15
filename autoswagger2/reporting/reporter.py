@@ -109,7 +109,10 @@ class Reporter:
         if self.args.all:
             final_results = [rr for rr in final_results if rr['status_code'] not in [401, 403]]
         else:
-            final_results = [rr for rr in final_results if rr['status_code'] == 200]
+            final_results = [
+                rr for rr in final_results
+                if rr['status_code'] == 200 or (rr.get('undocumented') is True and rr['status_code'] not in [401, 403, 404])
+            ]
 
         if not final_results:
             log("No valid API responses found.", level="INFO")
@@ -173,6 +176,13 @@ class Reporter:
                         if details_content:
                             details_content += "\n"
                         details_content += "[bold red]Vuln Indicators:[/bold red] " + ", ".join(rr['vuln_indicators'])
+                        if (
+                            rr.get('undocumented') is True
+                            and truncated_preview
+                            and not (rr.get('pii_detected') and rr.get('pii_data'))
+                            and not rr.get('debug_info_detected')
+                        ):
+                            details_content += f"\n[bold]Preview:[/bold] {truncated_preview}"
                         
                     if rr.get('sensitive_parameters'):
                         param_strs = []

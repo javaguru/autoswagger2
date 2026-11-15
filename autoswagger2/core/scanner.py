@@ -10,6 +10,7 @@ from urllib.parse import urlparse
 from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TimeElapsedColumn
 
 from ..discovery.finder import SpecFinder
+from ..discovery.hidden_finder import HiddenEndpointFinder
 from .requester import Requester
 from ..reporting.reporter import Reporter
 from ..analysis.bola import BolaTester
@@ -43,6 +44,8 @@ class Scanner:
             "percentage_hosts_with_endpoint": 0,
             "regexes_found": set()
         }
+        if getattr(args, "hidden", False) is True:
+            self.stats["undocumented_endpoints_found"] = 0
         self.TOTAL_REQUESTS = 0
 
     def _get_max_workers(self):
@@ -198,36 +201,80 @@ class Scanner:
             requester = Requester(api_base_url, self.args, self.session)
             requester.auth_origin = target_origin
             requester.max_workers = getattr(self, "_per_url_workers", self._get_max_workers())
+
+            hidden_results = []
+            if getattr(self.args, "hidden", False) is True:
+                hidden_finder = HiddenEndpointFinder(
+                    api_base_url=api_base_url,
+                    base_path=base_path,
+                    args=self.args,
+                    session=self.session,
+                    auth_origin=target_origin,
+                    spec_url=spec_url,
+                )
+                hidden_finder.max_workers = requester.max_workers
+                try:
+                    hidden_results = hidden_finder.discover(swagger_spec)
+                finally:
+                    self._add_request_count(hidden_finder)
+
             try:
-                results = requester.test_endpoints(swagger_spec, base_path)
+                documented_results = requester.test_endpoints(swagger_spec, base_path)
             finally:
                 self._add_request_count(requester)
 
+            results = hidden_results + (documented_results or [])
             if results:
-                host_has_pii = False
-                pii_types = set()
-                regex_values = set()
-                for rr in results:
-                    if rr.get('pii_detected'):
-                        host_has_pii = True
-                        pii_details = rr.get('pii_detection_details')
-                        if isinstance(pii_details, dict):
-                            pii_types.update(pii_details.keys())
-
-                        regex_patterns = rr.get('regex_patterns_found')
-                        if isinstance(regex_patterns, dict):
-                            regex_values.update(regex_patterns.values())
-
-                with self._lock:
-                    self.all_results.extend(results)
-                    self.stats["hosts_with_valid_endpoint"] += 1
-                    if host_has_pii:
-                        self.stats["hosts_with_pii"] += 1
-                    self.stats["pii_detection_methods"].update(pii_types)
-                    self.stats["regexes_found"].update(regex_values)
+                self._record_endpoint_results(results, undocumented_count=len(hidden_results))
         else:
             if not is_quiet_output(self.args):
                 log(f"No spec found for {base_url}.", level="INFO")
+            if getattr(self.args, "hidden", False) is True:
+                parsed_target_url = urlparse(base_url)
+                if parsed_target_url.scheme in ("http", "https") and parsed_target_url.netloc:
+                    api_base_url = f"{parsed_target_url.scheme}://{parsed_target_url.netloc}"
+                    fallback_base_path = parsed_target_url.path.rstrip("/")
+                    if fallback_base_path == "/":
+                        fallback_base_path = ""
+                    hidden_finder = HiddenEndpointFinder(
+                        api_base_url=api_base_url,
+                        base_path=fallback_base_path,
+                        args=self.args,
+                        session=self.session,
+                        auth_origin=api_base_url,
+                    )
+                    hidden_finder.max_workers = getattr(self, "_per_url_workers", self._get_max_workers())
+                    try:
+                        hidden_results = hidden_finder.discover(None)
+                    finally:
+                        self._add_request_count(hidden_finder)
+                    if hidden_results:
+                        self._record_endpoint_results(hidden_results, undocumented_count=len(hidden_results))
+
+    def _record_endpoint_results(self, results, undocumented_count=0):
+        host_has_pii = False
+        pii_types = set()
+        regex_values = set()
+        for rr in results:
+            if rr.get('pii_detected'):
+                host_has_pii = True
+                pii_details = rr.get('pii_detection_details')
+                if isinstance(pii_details, dict):
+                    pii_types.update(pii_details.keys())
+
+                regex_patterns = rr.get('regex_patterns_found')
+                if isinstance(regex_patterns, dict):
+                    regex_values.update(regex_patterns.values())
+
+        with self._lock:
+            self.all_results.extend(results)
+            self.stats["hosts_with_valid_endpoint"] += 1
+            if host_has_pii:
+                self.stats["hosts_with_pii"] += 1
+            if undocumented_count and "undocumented_endpoints_found" in self.stats:
+                self.stats["undocumented_endpoints_found"] += undocumented_count
+            self.stats["pii_detection_methods"].update(pii_types)
+            self.stats["regexes_found"].update(regex_values)
 
     def _expand_server_url(self, server_entry):
         if not isinstance(server_entry, dict):

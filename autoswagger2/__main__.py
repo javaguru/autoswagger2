@@ -55,6 +55,8 @@ def run():
     scan_group.add_argument("-t", "--threads", type=int, default=20, help="Maximum concurrent worker threads (default: 20, max: 100).")
     scan_group.add_argument("--no-cache", action="store_true", help="Disable specification disk cache reading and writing.")
     scan_group.add_argument("--cache-ttl", type=int, default=3600, help="Specification cache TTL in seconds (default: 3600).")
+    scan_group.add_argument("--hidden", action="store_true", help="Discover undocumented endpoints (e.g., Spring @Hidden routes) via dictionary probing before scanning documented paths.")
+    scan_group.add_argument("--hidden-wordlist", metavar="FILE", default=None, help="Custom wordlist file (one path suffix per line) to include during --hidden discovery.")
 
 
     # Authentication Options
@@ -85,6 +87,8 @@ def run():
     args = parser.parse_args()
     args.threads = max(1, min(100, args.threads))
     args.cache_ttl = max(0, args.cache_ttl)
+    if args.hidden_wordlist:
+        args.hidden = True
 
     if not args.urls and not sys.stdin.isatty():
         urls = [line.strip() for line in sys.stdin if line.strip()]

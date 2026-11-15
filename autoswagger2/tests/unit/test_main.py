@@ -178,3 +178,26 @@ def test_main_clamps_threads_and_keeps_min_pool_size():
         session_passed = MockScanner.call_args[0][2]
         assert parsed_args.threads == 1
         assert session_passed.get_adapter("https://localhost")._pool_maxsize == 20
+
+
+def test_main_hidden_and_hidden_wordlist_flags(tmp_path):
+    wl = tmp_path / "routes.txt"
+    wl.write_text("echo\n", encoding="utf-8")
+
+    # --hidden-wordlist automatically enables args.hidden
+    test_args = ["autoswagger2", "http://localhost:8082/nexus-backend", "--hidden-wordlist", str(wl)]
+    with patch.object(sys, 'argv', test_args), \
+         patch('autoswagger2.__main__.Scanner') as MockScanner:
+        run()
+        parsed_args = MockScanner.call_args[0][1]
+        assert parsed_args.hidden is True
+        assert parsed_args.hidden_wordlist == str(wl)
+
+    # Explicit --hidden without wordlist
+    test_args_flag = ["autoswagger2", "http://localhost:8082/nexus-backend", "--hidden"]
+    with patch.object(sys, 'argv', test_args_flag), \
+         patch('autoswagger2.__main__.Scanner') as MockScanner:
+        run()
+        parsed_args = MockScanner.call_args[0][1]
+        assert parsed_args.hidden is True
+        assert parsed_args.hidden_wordlist is None

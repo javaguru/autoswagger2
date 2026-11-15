@@ -35,9 +35,11 @@ It is the end user's responsibility to ensure that their activities comply with 
 
 This software is provided "as is," without warranty of any kind, express or implied. The user acknowledges using this tool at their own risk.
 
-## Key Features
+## ⚡ Key Features Innovations
 
 * **Advanced Specification Discovery:** Employs a multi-phase discovery process (direct parsing, Swagger UI HTML and JavaScript resource inspection, context-aware path probing, and root fallback), ensuring compatibility with modern frameworks such as Spring Boot. Includes an **atomic SHA-256 disk cache** with configurable TTL (`--cache-ttl`, default `3600s`) and explicit bypass (`--no-cache`).
+
+* **Undocumented / `@Hidden` Endpoint Discovery (`--hidden`):** Before scanning documented OpenAPI paths, optionally inventories undocumented routes omitted from the schema (e.g., SpringDoc `@Hidden`, `@ApiIgnore`, or `include_in_schema=False` controllers such as `/v1/echo` or `/actuator/env`). Derives version/namespace prefixes directly from the OpenAPI specification, filters SPA/catch-all soft-404s via per-prefix canary baselines, recovers missing query parameters on `400`/`422`, detects `405` non-`GET` routes (`Allow` header), and supports custom route lists via `--hidden-wordlist FILE`.
 
 * **Extensive OpenAPI Support:** Precise version detection (Swagger 2.0, OpenAPI 3.0.x, OpenAPI 3.1), **recursive `$ref` resolution with cycle detection**, `allOf` / `oneOf` / `anyOf` schema composition, OpenAPI 3.1 type arrays (e.g., `["string", "null"]`), `servers` template variable expansion, path/operation parameter merging, `multipart/form-data` payloads, and native support for OpenAPI 3.1 Webhooks (safely skipping unresolved runtime expressions).
 
@@ -110,7 +112,8 @@ usage: autoswagger2 [-h] [-V] [-v] [-rate RATE] [-k]
                     [--openapi-version OPENAPI_VERSION] [-risk] [-all] [-b]
                     [--test-bfla] [--test-bopla] [--test-urc]
                     [--allow-external] [-t THREADS] [--no-cache]
-                    [--cache-ttl CACHE_TTL] [-H] [--api-key] [--api-key-src]
+                    [--cache-ttl CACHE_TTL] [--hidden]
+                    [--hidden-wordlist FILE] [-H] [--api-key] [--api-key-src]
                     [--key-header] [--key-prefix] [--user-agent UA] [--bola]
                     [--bola-id "param=id"] [-product] [-stats] [-json] [-csv]
                     [-sarif] [-html] [--out FILE]
@@ -144,6 +147,9 @@ Scan Behavior:
   --no-cache            Disable specification disk cache reading and writing.
   --cache-ttl CACHE_TTL
                         Specification cache TTL in seconds (default: 3600).
+  --hidden              Discover undocumented endpoints (e.g., Spring @Hidden routes) via dictionary probing before scanning documented paths.
+  --hidden-wordlist FILE
+                        Custom wordlist file (one path suffix per line) to include during --hidden discovery.
 
 Authentication:
   -H , --header         Add a custom Key:Value header to all requests (e.g., "Authorization: Bearer ...")
@@ -196,6 +202,28 @@ If the context-aware search is unsuccessful and the initial URL was not the serv
 1. **Root Search:** The entirety of the "Context-Aware Discovery" process is repeated, commencing from the server's root (`/`). This step is crucial for identifying specifications in applications not deployed at the domain's root.
 
 The discovery process concludes upon the successful parsing of a valid OpenAPI specification.
+
+## Undocumented / Hidden Endpoint Discovery (`--hidden`)
+
+Modern API frameworks allow developers to hide routes from generated OpenAPI specifications—for example, SpringDoc's `@Hidden` annotation, Springfox's `@ApiIgnore`, or FastAPI's `include_in_schema=False` (OWASP API9: Improper Inventory Management).
+
+When `--hidden` (or `--hidden-wordlist FILE`) is enabled, `AutoSwagger2` runs an undocumented route discovery phase **before** scanning the documented endpoints in the schema:
+
+1. **Context-Aware Prefix Derivation:** Automatically extracts API namespace and version prefixes from the discovered OpenAPI `paths` (e.g., `/mock/v1`, `/v1`, `/api/v1`) in addition to the resolved `basePath` / `servers` context path. Even if no OpenAPI specification is exposed on the target, `--hidden` still probes standard API prefixes under the target URL.
+2. **Dictionary + Custom Wordlist:** Combines a curated built-in dictionary of diagnostic, operational, and Spring Boot Actuator routes (`echo`, `ping`, `health`, `status`, `info`, `env`, `config`, `debug`, `actuator/*`, etc.) with any custom route suffixes supplied via `--hidden-wordlist FILE`, while automatically skipping paths already documented in the OpenAPI schema.
+3. **Canary Baseline Filtering (Zero Soft-404 Noise):** Sends one non-existent canary probe per prefix to fingerprint catch-all responses (such as Single-Page Application `200 OK` HTML fallbacks or custom JSON not-found envelopes) and discards matching responses.
+4. **Parameter & Method Recovery:**
+   * If a `GET` probe returns `400`/`422` (indicating an existing route with a missing `@RequestParam`), automatically retries once with extracted/common benign query parameters (e.g., `?msg=test&message=test...`).
+   * If a `GET` probe returns `405 Method Not Allowed`, inspects the `Allow` header—reporting allowed methods safely in read-only mode, or testing `POST`/`PUT` automatically when `-risk` is enabled.
+5. **Full PII/Secret Analysis & Reporting:** Every discovered undocumented endpoint undergoes full Presidio PII, secret regex, and debug info inspection, and is flagged with `Undocumented Endpoint (@Hidden)` across the Rich console table, JSON, CSV, SARIF, and HTML reports.
+
+```bash
+# Discover @Hidden endpoints (such as /v1/echo) before scanning documented schema endpoints
+python -m autoswagger2 https://api.example.com --hidden -stats
+
+# Include non-GET @Hidden routes (-risk) and a custom wordlist file
+python -m autoswagger2 https://api.example.com --hidden --hidden-wordlist custom-routes.txt -risk -stats
+```
 
 ## Endpoint Testing
 
@@ -355,12 +383,12 @@ python -m autoswagger2 https://api.example.com --test-urc
 
 ## 🛠️ Progressive Tutorial & Use Cases
 
-### 1. Safe Read-Only Reconnaissance + Statistics
+### 1. Safe Read-Only Reconnaissance + Undocumented (`@Hidden`) Route Inventory
 
-Start with a non-destructive read-only scan (`GET` endpoints only) with runtime metrics enabled:
+Start with a non-destructive read-only scan (`GET` endpoints only) that also checks for undocumented routes such as Spring `@Hidden` `/v1/echo` endpoints:
 
 ```bash
-python -m autoswagger2 https://api.example.com -v -stats
+python -m autoswagger2 https://api.example.com --hidden -v -stats
 ```
 
 ### 2. Local / Staging Audit (Fresh Spec Cache, Custom Rate & Threads)
